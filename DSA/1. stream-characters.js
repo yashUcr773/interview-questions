@@ -5,7 +5,7 @@
  * Design a StreamMatcher that accepts characters one by one and returns true immediately when a keyword ends. 
  * * Constraint 1: The vocabulary size can be large (10k+ words). 
  * * Constraint 2: Checking must be $O(1)$ per character to handle thousands of concurrent streams in the Consumer service. 
- * Naive string matching ($O(K \cdot L)$) is too slow. 
+ * Naive string matching ($O(K*L)$) is too slow. 
  * Example: 
  * * keywords = ["apple", "app", "apply"] 
  * * stream = "h", "e", "y", " ", "a", "p", "p", "l", "y" 
