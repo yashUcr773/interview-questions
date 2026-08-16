@@ -6,15 +6,17 @@
  * behavior we observe comes from load, not from the work the endpoint does.
  */
 
-const express = require('express')
-const cors = require('cors')
-const dotenv = require('dotenv')
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import { rateLimiter } from './ratelimiter/rateLimiter.js';
 dotenv.config() // Load PORT (and anything else) from .env into process.env
+
+
 
 const PORT = process.env.PORT || 3000
 
 const app = express()
-
 
 // ---------------------------------------------------------------------------
 // Middleware
@@ -22,7 +24,7 @@ const app = express()
 
 app.use(cors())          // allow cross-origin requests
 app.use(express.json())  // parse JSON request bodies
-
+app.use(rateLimiter({ type: 'fixed-window-classic', reqCount: 10, windowMs: 10_000 }))
 
 // ---------------------------------------------------------------------------
 // Routes
@@ -54,5 +56,7 @@ app.get('/health', (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.listen(PORT, () => {
-    console.log(`App running on port ${PORT}. http://localhost:${PORT}/health`)
+    console.log(`App running on port ${PORT}.`)
+    console.log(`http://localhost:${PORT}/health.`)
+    console.log(`http://localhost:${PORT}/api/test.`)
 })
