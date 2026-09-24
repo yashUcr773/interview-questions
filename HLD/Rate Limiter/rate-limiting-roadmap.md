@@ -1,2851 +1,1267 @@
-# Rate Limiting — Implementation-First Learning Roadmap
-
-## Purpose
-
-This roadmap is designed for learning rate limiting by **building, breaking, measuring, and redesigning** a real system.
-
-Instead of learning rate-limiting algorithms in isolation, you will progressively build a small API gateway that evolves from:
-
-```text
-Node.js + in-memory Map
-        ↓
-Multiple rate-limiting algorithms
-        ↓
-Policy engine
-        ↓
-Redis-backed state
-        ↓
-Atomic distributed limiter
-        ↓
-Load testing
-        ↓
-Failure handling
-        ↓
-Horizontal scaling
-        ↓
-Observability
-        ↓
-Production-style distributed rate limiter
-```
-
-By the end, you should be able to both **implement** a distributed rate limiter and **design one in a senior-level system-design interview**.
+# Rate Limiting (Deep Dive): Roadmap (0 → 1 → 100)
 
----
-
-# 0. Final Learning Outcomes
-
-By completing this roadmap, you should be able to:
-
-## Rate-limiting fundamentals
-
-- Explain why rate limiting exists.
-- Distinguish rate limiting from throttling and concurrency limiting.
-- Explain HTTP `429 Too Many Requests`.
-- Use `Retry-After`.
-- Design rate-limit response headers.
-- Identify appropriate rate-limit keys.
-
-## Algorithms
-
-Implement from scratch:
-
-- Fixed Window
-- Sliding Window Log
-- Sliding Window Counter
-- Token Bucket
-- Leaky Bucket
-
-Explain the tradeoffs between:
-
-- Accuracy
-- Memory
-- CPU
-- Burst handling
-- Latency
-- Implementation complexity
-
-## Distributed systems
-
-Understand:
-
-- Why an in-memory limiter fails when horizontally scaled.
-- Shared state.
-- Race conditions.
-- Atomicity.
-- Redis counters.
-- Redis expiration.
-- Redis transactions.
-- Lua scripts.
-- Distributed token buckets.
-- Failure modes.
-- Fail-open vs fail-closed.
-
-## System design
-
-Design:
-
-- Per-IP limits.
-- Per-user limits.
-- Per-API-key limits.
-- Per-endpoint limits.
-- Global limits.
-- Tier-based limits.
-- Multiple limits applied to one request.
-- Horizontally scaled rate limiters.
-- High-throughput distributed rate limiters.
-
-## Production engineering
-
-Implement:
-
-- Load testing.
-- Latency measurement.
-- Metrics.
-- Logging.
-- Failure injection.
-- Redis failure handling.
-- Horizontal scaling.
-- Configuration-driven policies.
-
----
-
-# 1. Prerequisites
-
-## 1.1 Programming
-
-You should be comfortable with:
-
-- Variables
-- Functions
-- Objects/classes
-- Arrays
-- Maps/sets
-- Modules
-- Error handling
-- Async programming
-- Promises
-- Basic HTTP servers
-
-Recommended language:
-
-- Node.js
-- JavaScript or TypeScript
-
-You do **not** need advanced TypeScript.
-
----
-
-## 1.2 HTTP
-
-Know:
-
-- HTTP methods
-- Request/response
-- Status codes
-- Headers
-- JSON
-- Client IP concept
-- Middleware concept
-
-You should understand:
-
-```text
-Client
-   ↓
-HTTP Request
-   ↓
-Server
-   ↓
-HTTP Response
-```
-
----
-
-## 1.3 Basic networking
-
-Know at least:
-
-- Client/server model
-- TCP at a high level
-- Ports
-- IP addresses
-- Load balancers at a high level
-- Horizontal scaling
-
-You don't need to know TCP internals deeply before starting.
-
----
-
-## 1.4 Data structures
-
-Know:
-
-- Array
-- Queue
-- Map/hash map
-- Set
-- Queue/deque concept
-
-Important:
-
-You should understand why choosing a data structure affects algorithm performance.
-
----
-
-## 1.5 Basic databases / Redis
-
-Redis is introduced later, so you do **not** need Redis beforehand.
-
-You should understand the general idea of:
-
-```text
-Key → Value
-```
-
----
-
-## 1.6 Testing
-
-You should know how to:
-
-- Make HTTP requests.
-- Write basic tests.
-- Run multiple requests.
-- Read logs.
-- Measure basic execution time.
-
----
-
-# 2. Section 1 — Build the Traffic Playground
-
-## Goal
-
-Create the application that every later section will modify.
-
-Do not implement rate limiting yet.
-
----
-
-## Topics
-
-- Node.js HTTP server
-- HTTP routes
-- JSON responses
-- Request handling
-- Artificial latency
-- Basic load generation
-- Request/response measurement
-
----
-
-## Build
-
-Create:
-
-```text
-rate-limiter-lab/
-
-├── src/
-│   ├── server.js
-│   └── routes.js
-│
-├── load-test/
-│   └── client.js
-│
-├── test/
-│
-├── package.json
-└── README.md
-```
-
-Endpoints:
-
-```text
-GET /health
-GET /api/test
-GET /api/expensive
-GET /api/search
-```
-
----
-
-## How to implement
-
-### Step 1
-
-Create a Node.js HTTP server.
-
-### Step 2
-
-Implement `/health`.
-
-Return:
-
-```json
-{
-  "status": "ok"
-}
-```
-
-### Step 3
-
-Implement `/api/test`.
-
-### Step 4
-
-Implement `/api/expensive`.
-
-Artificially delay the response to simulate an expensive operation.
-
-### Step 5
-
-Create a basic load generator.
-
-It should support:
-
-```text
-number of requests
-concurrency
-target URL
-```
-
-### Step 6
-
-Measure:
-
-```text
-total requests
-successful requests
-failed requests
-duration
-requests/sec
-latency
-```
-
----
-
-## Experiments
-
-Run:
-
-```text
-10 requests
-100 requests
-1,000 requests
-10,000 requests
-```
-
-Try different concurrency levels.
-
----
-
-## Prerequisites
-
-- Node.js
-- HTTP basics
-- Async programming
-
----
-
-## You should know after this section
-
-You should be able to explain:
-
-- How an HTTP request reaches your application.
-- Where middleware would execute.
-- What happens when request volume increases.
-- Difference between request rate and concurrency.
-- How to generate traffic against your application.
-
----
-
-## Things you learn
-
-- HTTP server implementation
-- Request generation
-- Basic performance measurement
-- Why protecting expensive resources matters
-
----
-
-# 3. Section 2 — Fixed Window Rate Limiter
-
-## Goal
-
-Implement your first rate limiter.
-
-Requirement:
-
-```text
-5 requests / 10 seconds / IP
-```
-
----
-
-## Topics
-
-- Rate-limit key
-- Request counting
-- Time windows
-- Expiration
-- HTTP 429
-- Rate-limit headers
-- Middleware
-
----
-
-## Build
-
-Create:
-
-```text
-src/
-└── rate-limiter/
-    └── fixed-window.js
-```
-
-Use:
-
-```text
-Map
-```
-
-State:
-
-```text
-clientId
-    ↓
-{
-  count,
-  windowStart
-}
-```
-
----
-
-## How to implement
-
-When a request arrives:
-
-### Step 1 — Identify the client
-
-Initially:
-
-```text
-clientId = IP address
-```
-
-### Step 2 — Find client state
-
-If no state exists:
-
-```text
-count = 1
-windowStart = now
-```
-
-### Step 3 — Check the window
-
-Calculate:
-
-```text
-now - windowStart
-```
-
-### Step 4 — Increment
-
-If still inside the window:
-
-```text
-count++
-```
-
-### Step 5 — Reject
-
-If:
-
-```text
-count > limit
-```
-
-return:
-
-```text
-429 Too Many Requests
-```
-
-### Step 6 — Reset
-
-If the window expired:
-
-```text
-count = 1
-windowStart = now
-```
-
----
-
-## Add headers
-
-Start with:
-
-```text
-X-RateLimit-Limit
-X-RateLimit-Remaining
-Retry-After
-```
-
----
-
-## Tests
-
-Verify:
-
-```text
-5 requests → 200
-6th request → 429
-```
-
-Then wait for the window to expire.
-
----
-
-## Prerequisites
-
-Section 1.
-
----
-
-## You should know after this section
-
-You should be able to:
-
-- Implement a fixed-window limiter from memory.
-- Explain what a rate-limit key is.
-- Explain how a request becomes a 429.
-- Calculate remaining requests.
-- Calculate retry time.
-
----
-
-## Things you learn
-
-- Counters
-- Time windows
-- Middleware
-- HTTP semantics
-- Basic resource protection
-
----
-
-# 4. Section 3 — Break Fixed Window
-
-## Goal
-
-Do not improve the implementation yet.
-
-Break it.
-
----
-
-## Topics
-
-- Boundary problem
-- Burst traffic
-- Algorithm limitations
-- Experimental debugging
-
----
-
-## How to do it
-
-Configure:
-
-```text
-5 requests / 10 seconds
-```
-
-Send:
-
-```text
-5 requests at t = 9.9s
-```
-
-Then:
-
-```text
-5 requests at t = 10.1s
-```
-
-Observe how many requests can occur in a very short real-world interval.
-
----
-
-## Experiment
-
-Modify the load tester so you can control:
-
-- Start time
-- Request count
-- Request interval
-- Concurrency
-
----
-
-## Prerequisites
-
-Section 2.
-
----
-
-## You should know after this section
-
-You should be able to explain:
-
-> Why does fixed-window rate limiting allow bursts around window boundaries?
-
----
-
-## Things you learn
-
-- How to discover algorithmic weaknesses experimentally.
-- Why implementation correctness and algorithm correctness are different.
-- Why rate-limit semantics matter.
-
----
-
-# 5. Section 4 — Sliding Window Log
-
-## Goal
-
-Implement:
-
-```text
-5 requests in any rolling 10-second period
-```
-
----
-
-## Topics
-
-- Rolling windows
-- Timestamp-based limiting
-- Queue/deque
-- Expired-entry cleanup
-- Memory tradeoffs
-
----
-
-## Build
-
-Create:
-
-```text
-rate-limiter/
-├── fixed-window.js
-└── sliding-window.js
-```
-
-State:
-
-```text
-clientId
-    ↓
-timestamps[]
-```
-
-Example:
-
-```text
-user-123
-[
-  10.2,
-  11.7,
-  14.1,
-  16.8,
-  18.9
-]
-```
-
----
-
-## How to implement
-
-For every request:
-
-### Step 1
-
-Calculate:
-
-```text
-cutoff = now - window
-```
-
-### Step 2
-
-Remove timestamps older than cutoff.
-
-### Step 3
-
-Count remaining timestamps.
-
-### Step 4
-
-Reject if count >= limit.
-
-### Step 5
-
-Otherwise add the current timestamp.
-
----
-
-## Test
-
-Send:
-
-```text
-t=0
-t=2
-t=4
-t=6
-t=8
-```
-
-Then test:
-
-```text
-t=9 → reject
-t=10.1 → first request expires
-```
-
----
-
-## Prerequisites
-
-- Arrays
-- Queue concept
-- Time calculations
-
----
-
-## You should know after this section
-
-You should be able to:
-
-- Implement sliding-window logging.
-- Explain why it is more accurate than fixed windows.
-- Explain why it consumes more memory.
-
----
-
-## Things you learn
-
-- Rolling time windows
-- Timestamp state
-- Cleanup strategies
-- Accuracy vs memory
-
----
-
-# 6. Section 5 — Optimize Sliding Window
-
-## Goal
-
-Improve the data structure.
-
----
-
-## Topics
-
-- Queue
-- Deque
-- Amortized operations
-- Memory management
-- Algorithmic complexity
-
----
-
-## How to implement
-
-Start with the naive implementation:
-
-```text
-filter timestamps on every request
-```
-
-Then move toward:
-
-```text
-HEAD
- ↓
-[old][old][valid][valid][valid]
-```
-
-Remove expired timestamps from the front.
-
----
-
-## Benchmark
-
-Test:
-
-```text
-100,000 requests
-1,000,000 requests
-```
-
-Compare:
-
-```text
-naive array cleanup
-vs
-queue/deque approach
-```
-
----
-
-## Prerequisites
-
-Section 4.
-
----
-
-## You should know after this section
-
-You should be able to discuss:
-
-- Time complexity.
-- Memory complexity.
-- Why queue-like structures are useful for timestamp expiration.
-
----
-
-## Things you learn
-
-- Data-structure-driven optimization
-- Amortized thinking
-- Performance benchmarking
-
----
-
-# 7. Section 6 — Sliding Window Counter
-
-## Goal
-
-Reduce memory usage.
-
----
-
-## Topics
-
-- Approximation
-- Previous/current windows
-- Weighted counts
-- Accuracy tradeoffs
-- Memory optimization
-
----
-
-## How to implement
-
-Store:
-
-```text
-previousCount
-currentCount
-windowStart
-```
-
-Instead of storing every request timestamp.
-
-Calculate an effective count using the progress through the current window.
-
----
-
-## Build
-
-Create:
-
-```text
-rate-limiter/
-├── fixed-window.js
-├── sliding-window.js
-└── sliding-counter.js
-```
-
----
-
-## Experiment
-
-Send the same traffic pattern through:
-
-```text
-Fixed Window
-Sliding Log
-Sliding Counter
-```
-
-Compare:
-
-```text
-allowed
-rejected
-memory
-accuracy
-```
-
----
-
-## Prerequisites
-
-- Fixed window
-- Sliding window
-- Basic ratios/proportions
-
----
-
-## You should know after this section
-
-You should be able to explain:
-
-> Why would someone accept an approximation instead of storing every request?
-
----
-
-## Things you learn
-
-- Approximate algorithms
-- Memory optimization
-- Accuracy/complexity tradeoffs
-
----
-
-# 8. Section 7 — Token Bucket
-
-## Goal
-
-Implement burst-aware rate limiting.
-
-Configuration:
-
-```text
-capacity = 10
-refillRate = 2 tokens/sec
-```
-
----
-
-## Topics
-
-- Token bucket
-- Refill rate
-- Burst capacity
-- Sustained rate
-- Time-based state
-
----
-
-## State
-
-```text
-{
-  tokens,
-  lastRefillTime
-}
-```
-
----
-
-## How to implement
-
-### Step 1
-
-Calculate elapsed time:
-
-```text
-elapsed = now - lastRefillTime
-```
-
-### Step 2
-
-Calculate new tokens:
-
-```text
-newTokens = elapsed * refillRate
-```
-
-### Step 3
-
-Cap:
-
-```text
-tokens <= capacity
-```
-
-### Step 4
-
-If enough tokens exist:
-
-```text
-tokens -= requestCost
-```
-
-Allow.
-
-### Step 5
-
-Otherwise reject.
-
----
-
-## Experiments
-
-With:
-
-```text
-capacity = 10
-refill = 2/sec
-```
-
-Try:
-
-```text
-10 immediate requests
-```
-
-Then:
-
-```text
-11th request
-```
-
-Then wait and retry.
-
----
-
-## Prerequisites
-
-- Time calculations
-- Basic arithmetic
-- Previous limiter implementations
-
----
-
-## You should know after this section
-
-You should be able to explain:
-
-- Burst capacity.
-- Refill rate.
-- Sustained rate.
-- Why token bucket does not mean one request every fixed interval.
-
----
-
-## Things you learn
-
-- Token bucket algorithm
-- Burst handling
-- Rate vs capacity
-- Continuous refill
-
----
-
-# 9. Section 8 — Leaky Bucket
-
-## Goal
-
-Understand traffic smoothing.
-
----
-
-## Topics
-
-- Queue-based limiting
-- Fixed output rate
-- Backpressure
-- Traffic smoothing
-- Queue overflow
-
----
-
-## How to implement
-
-State:
-
-```text
-queue
-processingRate
-maxQueueSize
-```
-
-Architecture:
-
-```text
-Requests
-   ↓
-Queue
-   ↓
-Fixed-rate worker
-   ↓
-Backend
-```
-
----
-
-## Experiment
-
-Configure:
-
-```text
-2 requests/sec
-queue capacity = 10
-```
-
-Send:
-
-```text
-20 requests immediately
-```
-
-Observe:
-
-- queued requests
-- rejected requests
-- processing rate
-
----
-
-## Prerequisites
-
-- Queue
-- Async programming
-- Token bucket
-
----
-
-## You should know after this section
-
-You should be able to compare:
-
-```text
-Token Bucket
-vs
-Leaky Bucket
-```
+> Part of your [interview prep roadmaps](../../README.md) · Code: **TypeScript** (+ Redis/Lua) · Pace: **~2 hrs/day** · Updated: Sep 2026
 
-and explain:
+**Who this is for:** An engineer who wants to own one system *completely*, from a single-process algorithm to a distributed, observable, failure-tolerant service. "Design a rate limiter" is one of the most-asked system design prompts, a common LLD/machine-coding problem, and a reliable source of senior follow-ups (atomicity, clocks, hot keys, fail-open vs fail-closed).
 
-- Burst behavior
-- Queueing
-- Output smoothing
-- Admission control
+**What "done" looks like:** You can implement and test every major algorithm and explain its guarantees precisely. You can build a distributed limiter on Redis with atomic Lua scripts, reason about failure modes and scale, and run the full "Design a rate limiter" interview (HLD *and* LLD versions) at a senior/staff bar.
 
----
-
-## Things you learn
-
-- Backpressure
-- Queue-based control
-- Traffic shaping
-
----
-
-# 10. Section 9 — Build a Common Rate-Limiter Interface
-
-## Goal
-
-Make all algorithms interchangeable.
-
----
-
-## Topics
-
-- Interfaces
-- Strategy pattern
-- Dependency injection
-- Abstraction
-- Separation of concerns
-
----
-
-## How to implement
-
-Define a common operation:
-
-```text
-check(key)
-```
-
-Return:
-
-```text
-{
-  allowed,
-  remaining,
-  retryAfter
-}
-```
-
-Implement:
-
-```text
-FixedWindowLimiter
-SlidingWindowLimiter
-SlidingCounterLimiter
-TokenBucketLimiter
-LeakyBucketLimiter
-```
-
----
-
-## Test
-
-Your API should be able to switch:
-
-```text
-algorithm = token-bucket
-```
-
-to:
-
-```text
-algorithm = sliding-window
-```
-
-without changing route code.
-
----
-
-## Prerequisites
-
-- All previous algorithms
-- Basic OOP/design patterns
-
----
-
-## You should know after this section
-
-You should be able to:
-
-- Explain the Strategy pattern.
-- Swap algorithms without changing consumers.
-- Separate algorithm logic from HTTP logic.
-
----
-
-## Things you learn
-
-- Clean architecture
-- LLD
-- Strategy pattern
-- Dependency injection
-- Testability
-
----
-
-# 11. Section 10 — IP, User, and API-Key Limits
-
-## Goal
-
-Learn how rate-limit identity works.
-
----
-
-## Topics
-
-- Client identity
-- IP-based limiting
-- User-based limiting
-- API-key limiting
-- Anonymous vs authenticated clients
-- Identity extraction
-
----
-
-## How to implement
-
-Support:
-
-```text
-IP
-User ID
-API key
-```
-
-For example:
-
-```text
-X-API-Key: abc123
-```
-
-Create tiers:
-
-```text
-anonymous → 10/min
-free      → 100/min
-premium   → 1000/min
-```
-
----
-
-## Prerequisites
-
-- HTTP headers
-- Basic authentication concepts
-- Previous limiter abstraction
+**How it connects:** This is the bridge between [LLD](../../LLD/Roadmap.md) (LLD-16: the rate limiter as a component), [Machine Coding](../../Machine%20Coding/Roadmap.md) (MC-13: rate limiter library), [Backend HLD](../Roadmap.md) (HLD-16 and HLD-21) and [AI System Design](../../AI%20System%20Design/Roadmap.md) (token-based limits for LLM APIs). Count shared work once.
 
 ---
 
-## You should know after this section
+## Your starting point in this repo
 
-You should be able to answer:
+You already have a working playground in [`backend/`](backend):
 
-- What should the rate-limit key be?
-- Why might IP be a bad key?
-- When is user ID better?
-- When is API key appropriate?
+| File | What it is | Use it in |
+| --- | --- | --- |
+| [`PHASE-0.md`](backend/PHASE-0.md) | Your notes from load-testing a naive API | RL-01 (done; revisit) |
+| [`index.ts`](backend/index.ts) | Express app with `/api/test`, `/api/expensive`, `/api/search`, `/health` | RL-09 |
+| [`request-generator.ts`](backend/request-generator.ts) | Burst load generator | RL-01, RL-22 |
+| [`ratelimiter/rateLimiter.ts`](backend/ratelimiter/rateLimiter.ts) | Middleware selecting an algorithm by a discriminated union | RL-09 |
+| `1.fixedWindowRateLimiterClassic.ts`, `2.fixedWindowRateLimiterRollingStart.ts` | Fixed window variants | RL-04 |
+| `3.slidingWindowLog.ts` | Sliding window log | RL-05 |
+| `4.slidingWindowCounter.ts` | Sliding window counter | RL-06 |
+| `5.tokenBucket.ts`, `6.tokenBucketWait.ts`, `7.tokenBucketQueue.ts` | Token bucket + shaping variants | RL-07, RL-08 |
+| `8.leakyBucket.ts` | Leaky bucket | RL-08 |
 
----
-
-## Things you learn
-
-- Identity vs policy
-- Multi-tenant rate limiting
-- Tiered access
-
----
-
-# 12. Section 11 — Endpoint-Specific Policies
-
-## Goal
-
-Different operations get different limits.
-
----
-
-## Topics
-
-- Policy configuration
-- Route-specific limits
-- Expensive operations
-- Configuration-driven behavior
-
----
-
-## Build
-
-Endpoints:
-
-```text
-GET  /api/users
-GET  /api/posts
-GET  /api/search
-POST /api/login
-```
-
-Policies:
-
-```text
-users  → 100/min
-posts  → 100/min
-search → 10/min
-login  → 5/min/IP
-```
-
----
-
-## How to implement
-
-Create a policy layer:
-
-```text
-Request
-  ↓
-Route
-  ↓
-Policy
-  ↓
-Identity
-  ↓
-Rate limiter
-  ↓
-Decision
-```
-
----
-
-## Prerequisites
-
-- Common limiter interface
-- Authentication/identity basics
-
----
-
-## You should know after this section
-
-You should be able to create new endpoint policies without modifying the limiter implementation.
-
----
+**Improvement exercises already visible in the code** (each becomes a lab below):
+1. `package.json` has a placeholder `test` script, so nothing is verified yet → **RL-03**.
+2. `rateLimiter()` passes `options` only to the classic fixed window. The other algorithms read module-level constants, so changing config doesn't change behavior → **RL-09**.
+3. Algorithms call `Date.now()` directly and keep state in module-level `Map`s, which makes them untestable and shared across middleware instances → **RL-03**.
+4. Keys use the client IP (`req.ip`) without considering proxies (`trust proxy`, `X-Forwarded-For`) → **RL-11**.
+5. The limiter is mounted globally before `/health`, so health checks can be rate limited → **RL-09**.
+6. The token bucket refills in discrete intervals (`intervals * refillRate`), which is a valid design, but you should also implement continuous refill and compare → **RL-07**.
+7. "Rolling start" (first-request-anchored) is still a fixed-length window per key, not a sliding window. Name it precisely → **RL-04**.
+8. All state is in memory, so it doesn't work across multiple instances → **RL-13 to RL-15**.
 
-## Things you learn
-
-- Policy engines
-- Configuration-driven architecture
-- Separation of policy and mechanism
-
 ---
 
-# 13. Section 12 — Multiple Limits Per Request
+## How to use this roadmap
 
-## Goal
+### Levels
 
-Apply several constraints simultaneously.
+| Level | Meaning | You can… |
+| --- | --- | --- |
+| **0 → 1** | Foundations | Implement and test every algorithm locally; explain its exact guarantee |
+| **1 → 10** | Interview core | Build an atomic Redis-backed limiter; run the "Design a rate limiter" interview well |
+| **10 → 50** | Senior depth | Handle scale (cluster, hot keys), failures, gateway integration and measurement |
+| **50 → 100** | Expert | Design adaptive limits, fairness, quotas/billing, AI token budgets and multi-region limits |
 
-Example:
+### Every section contains
+**Time** · **Why it matters** · **Prerequisites** · **What you'll learn** · **Hands-on** · **Interview questions** · **Resources** · **Pitfalls** · **Checklist** (concepts you should know after)
 
-```text
-Global → 10,000/sec
-User → 100/min
-Search → 10/min
-```
+### A 2-hour session
+`10 min` recall → `20 min` learn → `55 min` implement → `20 min` boundary/failure tests → `10 min` explain aloud → `5 min` notes.
 
 ---
-
-## How to implement
-
-Create a limiter chain:
 
-```text
-Request
-   ↓
-Global limiter
-   ↓
-User limiter
-   ↓
-Endpoint limiter
-   ↓
-Backend
-```
-
-If any limiter rejects:
-
-```text
-429
-```
-
----
+## Map at a glance
 
-## Prerequisites
+| ID | Section | Level | Time |
+| --- | --- | --- | --- |
+| RL-01 | Why rate limit, and where | 0 → 1 | 2–3 h |
+| RL-02 | Policy vocabulary & requirements | 0 → 1 | 2–3 h |
+| RL-03 | A testable foundation: pure decisions, injected clocks | 0 → 1 | 3–4 h |
+| RL-04 | Fixed window (aligned & first-request-anchored) | 0 → 1 | 3–4 h |
+| RL-05 | Sliding window log | 0 → 1 | 3–4 h |
+| RL-06 | Sliding window counter | 0 → 1 | 3–4 h |
+| RL-07 | Token bucket | 0 → 1 | 4–5 h |
+| RL-08 | Leaky bucket, shaping & queues | 0 → 1 | 3–4 h |
+| RL-09 | Middleware & the HTTP contract | 0 → 1 | 3–4 h |
+| RL-10 | Algorithm comparison & GCRA | 1 → 10 | 3–4 h |
+| RL-11 | Identity & keys | 1 → 10 | 3–4 h |
+| RL-12 | Multiple limits & policy configuration | 1 → 10 | 3–4 h |
+| RL-13 | Redis fundamentals for rate limiting | 1 → 10 | 4–5 h |
+| RL-14 | Race conditions & atomicity | 1 → 10 | 4–5 h |
+| RL-15 | Distributed algorithms in Redis | 1 → 10 | 6–8 h |
+| RL-16 | Client-side behavior | 1 → 10 | 2–3 h |
+| RL-17 | Interview: "Design a rate limiter" (HLD + LLD) | 1 → 10 | 4–5 h |
+| RL-18 | Scaling the store: Redis Cluster & hot keys | 10 → 50 | 4–5 h |
+| RL-19 | Hybrid local + global limiting | 10 → 50 | 4–5 h |
+| RL-20 | Failure modes | 10 → 50 | 3–4 h |
+| RL-21 | Gateway & infrastructure integration | 10 → 50 | 3–4 h |
+| RL-22 | Observability & load testing | 10 → 50 | 4–5 h |
+| RL-23 | Adaptive concurrency limits & load shedding | 50 → 100 | 4–5 h |
+| RL-24 | Fairness & scheduling | 50 → 100 | 3–4 h |
+| RL-25 | Quotas, billing & AI/LLM limits | 50 → 100 | 4–5 h |
+| RL-26 | Multi-region limits & abuse prevention | 50 → 100 | 3–4 h |
+| RL-27 | Capstone: production-grade rate limiting service | 50 → 100 | 10–15 h |
 
-- Policy engine
-- Multiple limiter instances
+**Totals:** 0 → 1 ≈ 26–35 h · 1 → 10 ≈ 29–38 h · 10 → 50 ≈ 18–23 h · 50 → 100 ≈ 24–33 h
 
 ---
 
-## You should know after this section
+# Part A: 0 → 1 (Foundations)
 
-You should understand:
+### RL-01 · Why rate limit, and where
 
-- Global vs local limits.
-- Hierarchical limits.
-- Composing multiple constraints.
-- Which limit should be reported when multiple policies exist.
+**Time:** 2–3 h · **Level:** 0 → 1
 
----
-
-## Things you learn
+**Why it matters:** Interviewers start with "why do we need this?" A crisp answer about protected resources and goals frames every later decision.
 
-- Constraint composition
-- Middleware chains
-- Policy precedence
-
----
+**Prerequisites**
+- [JS & Web](../../JS%20and%20Web%20Fundamentals/Roadmap.md) JSW-07 (async), CSF-06 (HTTP); your `PHASE-0.md` experiment
 
-# 14. Section 13 — Introduce Redis
+**What you'll learn**
+- Goals: protect scarce resources (CPU, DB, third-party quotas), fairness between clients, cost control, abuse prevention (brute force, scraping, spam), enforcing commercial tiers
+- Where limits live: client, CDN/WAF (edge), API gateway, service middleware, inside the service (per-operation), in front of databases or third-party calls
+- Related but different tools: **rate limit** (count over time), **quota** (allowance over a long period, often billed), **concurrency limit** (in-flight work), **load shedding** (reject when overloaded, regardless of client), **throttling** (ambiguous: say whether you mean reject or delay)
+- Offered load vs admitted load vs useful work; why limiting a trivial endpoint may not protect the expensive one
 
-## Goal
+**Hands-on (TypeScript)**
+1. Re-run your Phase 0 experiment with `/api/expensive` doing real work (simulated 50ms DB call + a small CPU loop). Record throughput, p50/p95/p99 latency and error counts at increasing load.
+2. Write a one-paragraph "threat model" for the playground API: which resource are you protecting, and from whom?
 
-Move shared rate-limit state out of process memory.
+**Interview questions**
+- Why do APIs need rate limiting?
+- Where would you put a rate limiter in this architecture?
+- Rate limiting vs load shedding vs concurrency limiting?
 
----
+**Resources**
+- Stripe: [Scaling your API with rate limiters](https://stripe.com/blog/rate-limiters) (primary)
+- *System Design Interview Vol. 1* (Alex Xu), ch. 4
 
-## Topics
+**Pitfalls**
+- Saying "rate limiting prevents DDoS". It helps at L7, but volumetric attacks need edge/network defenses.
 
-- Redis
-- Shared state
-- Distributed application instances
-- Redis keys
-- Counters
-- TTL
-- Expiration
+**Checklist: you should now be able to explain**
+- [ ] 5 goals of rate limiting
+- [ ] 6 places a limiter can live
+- [ ] Rate limit vs quota vs concurrency limit vs load shedding
+- [ ] What resource your playground protects
 
 ---
-
-## How to implement
-
-Create Docker Compose:
-
-```text
-app
-redis
-```
 
-Learn:
+### RL-02 · Policy vocabulary & requirements
 
-```text
-GET
-SET
-INCR
-EXPIRE
-TTL
-DEL
-```
+**Time:** 2–3 h · **Level:** 0 → 1
 
----
+**Why it matters:** "100 requests per minute" is ambiguous. Senior answers pin down the exact policy before choosing an algorithm.
 
-## First implementation
+**Prerequisites**
+- RL-01
 
-Convert your fixed-window limiter from:
+**What you'll learn**
+- **Subject/key:** IP, user, API key, tenant, route, or a combination
+- **Unit/cost:** requests, bytes, tokens, weighted cost per endpoint
+- **Window and burst semantics:** what happens exactly at the boundary; how much burst is allowed
+- **Accounting rules:** do rejected requests count? Do failed downstream calls count? Refunds?
+- **Scope:** per instance, per region, global; acceptable over-admission
+- **Response:** reject (429) vs delay (queue) vs degrade
+- **Failure policy:** fail-open vs fail-closed when the limiter's store is unavailable
+- **Client contract:** `Retry-After`, remaining allowance, reset time
+- **Teaching contract for Part A:** single process, synchronous decision, unit cost, rejected requests don't consume allowance, injected non-decreasing time, immediate rejection
 
-```text
-Node Map
-```
+**Hands-on (TypeScript)**
+1. Write a `POLICY.md` for the playground answering all the questions above for 3 policies: anonymous by IP, authenticated by user, and `/api/expensive` per tenant.
 
-to:
+**Interview questions**
+- What questions would you ask before designing a rate limiter?
+- Should rejected requests count against the limit?
+- Fail-open or fail-closed: which and when?
 
-```text
-Redis
-```
+**Resources**
+- Cloudflare docs: [Rate limiting rules](https://developers.cloudflare.com/waf/rate-limiting-rules/) (see how a real product exposes these choices) (primary)
 
-Example key concept:
+**Pitfalls**
+- Jumping to "token bucket" before defining the subject, unit and failure policy.
 
-```text
-rate:user:123
-```
+**Checklist: you should now be able to explain**
+- [ ] The 9 policy dimensions
+- [ ] Your 3 written policies
+- [ ] Fail-open vs fail-closed tradeoffs
 
 ---
-
-## Experiment
-
-Run:
-
-```text
-Node instance 1
-Node instance 2
-```
 
-Both use the same Redis.
-
-Send requests through both.
-
-Verify that the limit is shared.
-
----
+### RL-03 · A testable foundation: pure decisions, injected clocks
 
-## Prerequisites
+**Time:** 3–4 h · **Level:** 0 → 1
 
-- Docker basics
-- Redis basics
-- Previous rate limiter implementation
+**Why it matters:** Rate limiters are all about time boundaries. Without an injected clock you can't test them. This is also the clean LLD shape interviewers want: pure algorithm, state store, thin HTTP adapter.
 
----
+**Prerequisites**
+- RL-02; [LLD](../../LLD/Roadmap.md) LLD-05 (DI and testing); JSW-24
 
-## You should know after this section
+**What you'll learn**
+- The core interface: `decide(state, policy, cost, now) → { allowed, newState, retryAfterMs, remaining }`
+- Separating concerns: algorithm (pure) → store (in-memory now, Redis later) → middleware (HTTP)
+- `Clock` interface; fake clock for tests; wall clock (`Date.now()`) vs monotonic clock (`performance.now()`) and what each is good for
+- Half-open intervals `[start, end)`; milliseconds vs seconds
+- Validation: invalid config (zero/negative/non-finite limits) is a programming error, not a denial
+- Table-driven tests with Vitest
 
-You should be able to explain:
+**Hands-on (TypeScript)**
+1. Add Vitest and a `typecheck` script (`tsc --noEmit`) to `backend/package.json`; replace the placeholder `test` script.
+2. Create `ratelimiter/core/` with `types.ts` (`Policy`, `Decision`, `Clock`), `fakeClock.ts` and a `RateLimiter` interface: `check(key: string, cost?: number): Promise<Decision>`.
+3. Write a table-driven test harness you'll reuse for every algorithm: times `t=0`, just before a boundary, at the boundary, just after, and independent keys.
 
-> Why does an in-memory limiter fail when the application is horizontally scaled?
+**Interview questions**
+- How would you unit-test a rate limiter without sleeping?
+- Wall clock vs monotonic clock: which would you use here?
 
----
+**Resources**
+- [Vitest: Mocking timers and dates](https://vitest.dev/guide/mocking.html) (primary)
+- [MDN: performance.now()](https://developer.mozilla.org/en-US/docs/Web/API/Performance/now)
 
-## Things you learn
+**Pitfalls**
+- Tests that call `setTimeout` and wait: slow and flaky.
 
-- Shared state
-- Redis basics
-- Distributed application state
-- TTL
+**Checklist: you should now be able to explain**
+- [ ] The algorithm/store/adapter split
+- [ ] How the fake clock works
+- [ ] Your boundary test table
+- [ ] Wall vs monotonic time
 
 ---
 
-# 15. Section 14 — Discover Race Conditions
+### RL-04 · Fixed window (aligned & first-request-anchored)
 
-## Goal
+**Time:** 3–4 h · **Level:** 0 → 1
 
-Intentionally make the distributed limiter incorrect.
-
----
+**Why it matters:** It's the simplest algorithm and the easiest to distribute (`INCR` + `EXPIRE`). Its boundary-burst weakness is a guaranteed interview question.
 
-## Topics
+**Prerequisites**
+- RL-03
 
-- Race conditions
-- Concurrent requests
-- Read-modify-write
-- Lost updates
-- Distributed correctness
+**What you'll learn**
+- **Aligned fixed window:** `windowId = floor(now / W)`; count per `(key, windowId)`; all clients share boundaries
+- **First-request-anchored window** (your "rolling start"): the window starts at the key's first request, still fixed length. Name it precisely: it isn't sliding
+- The **boundary burst problem:** up to 2× limit within a W-length span straddling the boundary
+- Memory cost O(keys); cleanup of old windows
+- Synchronized-boundary thundering herds (all clients retry at :00)
 
----
+**Hands-on (TypeScript)**
+1. Refactor `1.fixedWindowRateLimiterClassic.ts` and `2.fixedWindowRateLimiterRollingStart.ts` onto the core interface (config from options, injected clock, per-instance state).
+2. Write a test that *proves* the boundary burst: 2× limit admitted within a W span.
+3. Add expired-window cleanup and a test for it.
 
-## How to implement
+**Interview questions**
+- What's the problem with fixed windows?
+- How would you implement a fixed window in Redis?
+- What happens when all clients' windows reset at the same second?
 
-Temporarily implement:
+**Resources**
+- [Redis docs: INCR (rate limiter pattern)](https://redis.io/docs/latest/commands/incr/) (primary)
+- Figma: [An alternative approach to rate limiting](https://www.figma.com/blog/an-alternative-approach-to-rate-limiting/)
 
-```text
-GET counter
-↓
-calculate
-↓
-SET counter
-```
+**Pitfalls**
+- Calling a first-request-anchored window "sliding".
 
-Then send many concurrent requests.
+**Checklist: you should now be able to explain**
+- [ ] Aligned vs anchored fixed windows
+- [ ] The boundary burst, with a numeric example
+- [ ] Complexity and cleanup
 
 ---
-
-## Example
-
-Initial:
-
-```text
-counter = 4
-```
 
-Two requests:
+### RL-05 · Sliding window log
 
-```text
-A → GET 4
-B → GET 4
+**Time:** 3–4 h · **Level:** 0 → 1
 
-A → SET 5
-B → SET 5
-```
+**Why it matters:** It's the *exact* trailing-window algorithm and your correctness oracle for testing approximations, but it's memory-hungry. Interviewers ask about its cost.
 
-Expected:
+**Prerequisites**
+- RL-04
 
-```text
-6
-```
+**What you'll learn**
+- Store each admitted request's timestamp; on each check, drop timestamps `≤ now − W`, then admit if `count < limit`
+- Exact guarantee: at most `limit` admissions in *any* W-length trailing window
+- Memory O(limit) per key; time O(expired) amortized
+- Data structures: array with shift (O(n)), ring buffer/deque (O(1) amortized), binary search for cutoff
+- Redis equivalent: sorted set (`ZADD`, `ZREMRANGEBYSCORE`, `ZCARD`) (preview of RL-15)
+- Whether denied attempts are logged (policy choice)
 
-Actual:
+**Hands-on (TypeScript)**
+1. Refactor `3.slidingWindowLog.ts` onto the core interface using a ring buffer.
+2. Build a property-based test (fast-check): random request times → the admitted count in any W window is ≤ limit.
 
-```text
-5
-```
+**Interview questions**
+- Why is the sliding window log accurate but expensive?
+- How would you implement it in Redis?
+- What's the memory cost for 1M users at 1,000 requests/hour?
 
----
-
-## Experiment
-
-Use:
-
-```text
-100
-500
-1000
-10000
-```
+**Resources**
+- [fast-check docs](https://fast-check.dev/) (property-based testing) (primary for the lab)
+- Figma blog (sliding window log discussion)
 
-concurrent requests.
+**Pitfalls**
+- Using an array with `shift()` in a hot path (O(n)).
 
----
-
-## Prerequisites
+**Checklist: you should now be able to explain**
+- [ ] The exact guarantee of the log
+- [ ] Its memory and time costs
+- [ ] Ring buffer implementation
+- [ ] Using it as a test oracle
 
-- Redis
-- Async programming
-- Concurrency basics
-
 ---
-
-## You should know after this section
 
-You should be able to explain:
+### RL-06 · Sliding window counter
 
-- Why read-modify-write is dangerous.
-- How concurrency breaks counters.
-- Why distributed rate limiting requires atomic operations.
+**Time:** 3–4 h · **Level:** 0 → 1
 
----
-
-## Things you learn
+**Why it matters:** It's the popular production compromise (Cloudflare's approach): near-sliding accuracy with fixed-window memory.
 
-- Race conditions
-- Lost updates
-- Concurrency testing
-- Distributed correctness
-
----
+**Prerequisites**
+- RL-04, RL-05
 
-# 16. Section 15 — Atomic Redis Rate Limiting
+**What you'll learn**
+- Keep counts for the current and previous aligned windows
+- Estimate: `estimated = prevCount × (1 − elapsedInCurrent / W) + currCount`; admit if `estimated + cost ≤ limit`
+- The assumption: requests in the previous window were evenly distributed
+- Error characteristics: can over- or under-admit relative to the exact log; the error is bounded by the previous window's skew
+- Memory O(1) per key; trivially distributable (two counters)
 
-## Goal
+**Hands-on (TypeScript)**
+1. Refactor `4.slidingWindowCounter.ts` onto the core interface.
+2. Compare against the RL-05 oracle on bursty traffic (all requests at the end of the previous window) and uniform traffic; report the maximum over-admission observed.
 
-Make the Redis limiter correct under concurrency.
+**Interview questions**
+- How does the sliding window counter approximate a sliding window?
+- When is it inaccurate?
+- Why might Cloudflare choose it?
 
----
+**Resources**
+- Cloudflare: [How we built rate limiting capable of scaling to millions of domains](https://blog.cloudflare.com/counting-things-a-lot-of-different-things/) (primary)
 
-## Topics
+**Pitfalls**
+- Claiming it's exact.
 
-- Redis atomic operations
-- `INCR`
-- `EXPIRE`
-- Transactions
-- `MULTI`
-- `EXEC`
-- Lua scripts
+**Checklist: you should now be able to explain**
+- [ ] The weighted estimate formula
+- [ ] Its accuracy assumptions and failure cases
+- [ ] Memory advantages
 
 ---
 
-## How to implement
+### RL-07 · Token bucket
 
-Start with atomic primitives.
+**Time:** 4–5 h · **Level:** 0 → 1
 
-Then investigate:
+**Why it matters:** It's the most widely used algorithm (Stripe, AWS API Gateway, many SDKs). It cleanly separates *sustained rate* from *burst capacity*.
 
-```text
-MULTI
-EXEC
-```
+**Prerequisites**
+- RL-03
 
-Finally implement more complex rate-limit decisions using a Lua script.
+**What you'll learn**
+- State: `tokens`, `lastRefill`. Refill: `tokens = min(capacity, tokens + (now − lastRefill) × rate)`
+- **Lazy refill** (compute on each request; no timers)
+- Continuous vs interval refill (your current implementation refills in steps; both are valid, but know the difference)
+- Burst = capacity; sustained rate = refill rate
+- Weighted cost (`cost > 1`); rejecting costs larger than capacity (can never succeed)
+- `retryAfter = (cost − tokens) / rate`
+- Floating-point drift; storing tokens as fixed-point integers
+- Variants in your repo: **wait** (delay until a token is available) and **queue** (bounded queue of waiting requests); these are shaping (RL-08)
 
----
+**Hands-on (TypeScript)**
+1. Refactor `5.tokenBucket.ts` onto the core interface with continuous refill; keep an interval-refill variant and compare.
+2. Tests: full bucket burst, sustained rate over 60 fake seconds, weighted cost, cost > capacity, `retryAfter` accuracy, clock going backwards (clamp).
 
-## Atomic operation concept
+**Interview questions**
+- Explain the token bucket. What do capacity and refill rate each control?
+- How do you implement it without a background timer?
+- How would you charge 5 tokens for an expensive endpoint?
+- Token bucket vs sliding window: when do you choose each?
 
-You may need to perform:
+**Resources**
+- [Wikipedia: Token bucket](https://en.wikipedia.org/wiki/Token_bucket) (primary, concise)
+- [AWS API Gateway: request throttling](https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-request-throttling.html)
 
-```text
-read state
-↓
-calculate
-↓
-update state
-↓
-set expiration
-↓
-return decision
-```
+**Pitfalls**
+- Refilling with a `setInterval` per key (doesn't scale).
+- Forgetting to cap at capacity.
 
-as one logical atomic operation.
+**Checklist: you should now be able to explain**
+- [ ] The refill formula and lazy refill
+- [ ] Capacity vs rate semantics
+- [ ] Weighted costs and retry-after math
+- [ ] Continuous vs interval refill
 
 ---
-
-## Test
-
-Run:
 
-```text
-1000 concurrent requests
-```
+### RL-08 · Leaky bucket, shaping & queues
 
-Verify:
+**Time:** 3–4 h · **Level:** 0 → 1
 
-```text
-allowed + rejected
-```
+**Why it matters:** "Leaky bucket" means two different things (a queue that drains at a fixed rate vs a meter). Clarifying this, and discussing policing vs shaping, is a senior signal.
 
-matches the configured policy.
+**Prerequisites**
+- RL-07; CSF-10 (bounded queues)
 
----
-
-## Prerequisites
-
-- Race conditions
-- Redis commands
-- Token bucket implementation
-
----
-
-## You should know after this section
+**What you'll learn**
+- **Leaky bucket as a queue (shaping):** requests enter a bounded FIFO; a worker drains at a constant rate; smooths output; adds latency
+- **Leaky bucket as a meter (policing):** a "water level" that leaks over time; admit if the level + cost ≤ capacity; mathematically equivalent to a token bucket
+- Policing (reject now) vs shaping (delay)
+- Queue risks: unbounded memory, latency beyond client timeouts, work done for clients that already gave up. Mitigations: max queue size, per-request deadlines, cancellation (`AbortSignal`)
+- NGINX `limit_req` with `burst` and `nodelay`
 
-You should be able to explain:
+**Hands-on (TypeScript)**
+1. Refactor `8.leakyBucket.ts`, `6.tokenBucketWait.ts` and `7.tokenBucketQueue.ts`: add a max queue size, per-request deadlines, and cancellation when the client disconnects (`req.on('close')`).
+2. Load test the queue variant and plot latency vs queue size.
 
-- Why atomicity matters.
-- When `INCR` is sufficient.
-- When a transaction is useful.
-- When Lua is useful.
+**Interview questions**
+- Leaky bucket vs token bucket?
+- Policing vs shaping: when would you delay requests instead of rejecting them?
+- What goes wrong with an unbounded request queue?
 
----
+**Resources**
+- [NGINX: ngx_http_limit_req_module](https://nginx.org/en/docs/http/ngx_http_limit_req_module.html) (primary)
+- [Wikipedia: Leaky bucket](https://en.wikipedia.org/wiki/Leaky_bucket) (both interpretations)
 
-## Things you learn
+**Pitfalls**
+- Queueing without deadlines.
 
-- Atomicity
-- Redis transactions
-- Lua scripting
-- Distributed synchronization
+**Checklist: you should now be able to explain**
+- [ ] Both leaky bucket interpretations
+- [ ] Policing vs shaping
+- [ ] Queue bounds, deadlines and cancellation
 
 ---
-
-# 17. Section 16 — Distributed Token Bucket
 
-## Goal
+### RL-09 · Middleware & the HTTP contract
 
-Move the token bucket to Redis.
+**Time:** 3–4 h · **Level:** 0 → 1
 
----
+**Why it matters:** The client-visible behavior (status codes, headers, which routes are exempt) is part of the design, and it's what API consumers experience.
 
-## Topics
+**Prerequisites**
+- RL-04 to RL-08; CSF-06
 
-- Distributed token bucket
-- Shared state
-- Atomic state transitions
-- Redis Lua
-- Burst handling across servers
+**What you'll learn**
+- HTTP 429 Too Many Requests ([RFC 6585](https://www.rfc-editor.org/rfc/rfc6585)); `Retry-After` ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#field.retry-after))
+- The IETF `RateLimit` / `RateLimit-Policy` header fields draft (still a draft as of 2026) vs the common `X-RateLimit-Limit/Remaining/Reset` convention
+- 429 (client exceeded its limit) vs 503 (server overloaded)
+- Per-route policies; exempting health/readiness/metrics endpoints
+- Infrastructure errors (limiter store down) are not denials
+- Middleware factory design: config validated once at construction; per-instance state
 
----
+**Hands-on (TypeScript)**
+1. Fix `rateLimiter.ts` so **every** algorithm receives its options (add a test that changing the options changes the behavior for each type).
+2. Mount limiters per route (strict on `/api/expensive`, lenient on `/api/test`, none on `/health`).
+3. Add `Retry-After` and `RateLimit-*` headers; write supertest integration tests.
 
-## State
+**Interview questions**
+- What should a rate-limited response look like?
+- 429 vs 503?
+- Should health checks be rate limited?
 
-Conceptually:
+**Resources**
+- IETF draft: [RateLimit header fields for HTTP](https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/) (primary)
+- [GitHub REST API: rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api) (a real-world header contract)
 
-```text
-rate-limit:user:123
+**Pitfalls**
+- Returning 500 when the limiter's store fails, or silently denying everyone.
 
-tokens
-lastRefillTime
-```
+**Checklist: you should now be able to explain**
+- [ ] The response contract (status + headers)
+- [ ] 429 vs 503
+- [ ] Per-route policies and exemptions
+- [ ] Middleware configuration and ownership
 
 ---
 
-## How to implement
+# Part B: 1 → 100
 
-A request should atomically:
+## Level 1 → 10: Interview core
 
-```text
-1. Read bucket state.
-2. Calculate elapsed time.
-3. Refill tokens.
-4. Cap tokens.
-5. Check request cost.
-6. Deduct if allowed.
-7. Save state.
-8. Return remaining tokens.
-```
-
----
+### RL-10 · Algorithm comparison & GCRA
 
-## Test
+**Time:** 3–4 h · **Level:** 1 → 10
 
-Run:
+**Why it matters:** "Which algorithm would you pick, and why?" needs a crisp comparison. GCRA is a compact, elegant token-bucket equivalent that impresses at senior level.
 
-```text
-Node 1
-Node 2
-Node 3
-```
+**Prerequisites**
+- RL-04 to RL-08
 
-against the same Redis.
+**What you'll learn**
+- The comparison table (below): accuracy, burst behavior, memory, distributability
+- Which real systems use what (Stripe: token bucket; Cloudflare: sliding window counter; NGINX: leaky bucket; AWS API Gateway: token bucket)
+- **GCRA** (Generic Cell Rate Algorithm): store one timestamp per key, the theoretical arrival time (TAT)
+  - Emission interval `T = period / limit`; burst tolerance `τ = burst × T`
+  - `tat = max(storedTat, now)`; `newTat = tat + T × cost`; `allowAt = newTat − τ`
+  - If `now < allowAt` → deny, with `retryAfter = allowAt − now`; else store `newTat` and allow
+- Choosing by requirement: strict fairness at boundaries → log/GCRA; burst-friendly APIs → token bucket; smoothing → leaky queue; simple and cheap → fixed or sliding counter
 
-Send concurrent requests.
+**Hands-on (TypeScript)**
+1. Implement GCRA on the core interface; verify it matches your token bucket's decisions on random traffic (same rate and burst).
+2. Write the comparison table below from memory, then check it.
 
-Verify the bucket behaves as one shared bucket.
+**Interview questions**
+- Compare the five main rate-limiting algorithms.
+- Which would you choose for a public API with bursty clients?
+- What is GCRA and why is it memory-efficient?
 
----
+**Resources**
+- Brandur Leach: [Rate limiting, cells, and GCRA](https://brandur.org/rate-limiting) (primary)
+- [redis-cell](https://github.com/brandur/redis-cell) (a GCRA Redis module)
 
-## Prerequisites
+**Pitfalls**
+- Presenting one algorithm as "best" without tying it to requirements.
 
-- Token bucket
-- Redis
-- Lua
-- Race-condition understanding
+**Checklist: you should now be able to explain**
+- [ ] The full comparison table
+- [ ] GCRA state and math
+- [ ] Algorithm choice by requirement
 
 ---
-
-## You should know after this section
 
-You should be able to implement a distributed token bucket without relying on a rate-limit library.
+### RL-11 · Identity & keys
 
----
+**Time:** 3–4 h · **Level:** 1 → 10
 
-## Things you learn
+**Why it matters:** The key determines fairness and correctness. IP-based keys break behind NAT and proxies, and a spoofable key is a security hole.
 
-- Distributed algorithms
-- Atomic state transitions
-- Redis scripting
-- Shared burst capacity
+**Prerequisites**
+- RL-09; CSF-04 (NAT), CSF-17 (proxies)
 
----
+**What you'll learn**
+- Key options: IP, user ID, API key, tenant/org, device, route; composite keys (`tenant:route:policyVersion`)
+- IP pitfalls: NAT/CGNAT (many users share one IP, common on Indian mobile networks), IPv6 (limit per /64 prefix), proxies and `X-Forwarded-For` (trust only your own proxy hops; Express `trust proxy`)
+- Unauthenticated vs authenticated traffic (limit login attempts by IP *and* by account)
+- Tiers: free/pro/enterprise limits from a plan lookup (cached)
+- Per-endpoint cost weights
+- Key cardinality and memory
 
-# 18. Section 17 — Build the Mini API Gateway
+**Hands-on (TypeScript)**
+1. Add a `keyFn(req)` option with implementations for IP (with correct `trust proxy` handling), user and API key; test that a spoofed `X-Forwarded-For` doesn't bypass the limit when the proxy isn't trusted.
+2. Add tiered limits from a fake plan service.
 
-## Goal
+**Interview questions**
+- What would you rate limit by, and why?
+- How do you get the client IP behind a load balancer? How can it be spoofed?
+- How do you rate limit login attempts?
 
-Turn the components into one coherent system.
+**Resources**
+- [Express docs: Behind proxies](https://expressjs.com/en/guide/behind-proxies.html) (primary)
+- [OWASP: Blocking brute force attacks](https://owasp.org/www-community/controls/Blocking_Brute_Force_Attacks)
 
----
+**Pitfalls**
+- Trusting the leftmost `X-Forwarded-For` entry.
 
-## Architecture
-
-```text
-Client
-  ↓
-API Gateway
-  ├── Authentication
-  ├── Identity
-  ├── Rate limiting
-  ├── Routing
-  └── Logging
-        ↓
-      APIs
-```
+**Checklist: you should now be able to explain**
+- [ ] Key options and composite keys
+- [ ] IP pitfalls (NAT, IPv6, proxies)
+- [ ] Tiered and weighted limits
+- [ ] Login protection strategy
 
 ---
-
-## Endpoints
 
-```text
-GET  /api/users
-GET  /api/posts
-GET  /api/search
-POST /api/login
-```
-
----
+### RL-12 · Multiple limits & policy configuration
 
-## Policies
+**Time:** 3–4 h · **Level:** 1 → 10
 
-Example:
+**Why it matters:** Real systems combine limits (10/sec *and* 1,000/day, per user *and* per tenant). How you charge across them is a subtle correctness question.
 
-```text
-login
-5/min/IP
+**Prerequisites**
+- RL-10, RL-11
 
-search
-10/min/user
+**What you'll learn**
+- Layered limits: per-second burst + per-minute sustained + per-day quota; per-user + per-tenant + global
+- **All-or-nothing** (check all, debit all only if all pass) vs **sequential partial charging** (earlier limits get debited even when a later one denies)
+- Reporting the most restrictive `Retry-After`
+- Rule configuration: declarative rules (YAML/JSON like Envoy's ratelimit service descriptors), matching order, defaults
+- Hot reload of rules; versioning policies (`policyVersion` in the key); shadow mode ("log but don't enforce") for rollout
 
-normal API
-100/min/user
+**Hands-on (TypeScript)**
+1. Implement a `CompositeLimiter` with all-or-nothing semantics for in-memory algorithms; test that a denial by the daily limit doesn't consume per-second tokens.
+2. Load rules from a JSON file with schema validation (Zod) and support shadow mode.
 
-global
-10,000/sec
-```
+**Interview questions**
+- A user has a per-second and a per-day limit. If the per-day check fails, should the per-second tokens be consumed?
+- How would you roll out a stricter limit safely?
+- How do you configure limits for 1,000 API routes?
 
----
+**Resources**
+- [envoyproxy/ratelimit (descriptor config)](https://github.com/envoyproxy/ratelimit) (primary)
 
-## Prerequisites
+**Pitfalls**
+- Sequential checks that silently double-charge.
 
-All previous sections.
+**Checklist: you should now be able to explain**
+- [ ] Layered limit design
+- [ ] All-or-nothing vs partial charging
+- [ ] Declarative rule configuration
+- [ ] Shadow mode and policy versioning
 
 ---
-
-## You should know after this section
-
-You should be able to explain the complete request flow:
-
-```text
-Request
- ↓
-Identify client
- ↓
-Determine policy
- ↓
-Check global limit
- ↓
-Check user limit
- ↓
-Check endpoint limit
- ↓
-Allow/reject
- ↓
-Route request
-```
 
----
+### RL-13 · Redis fundamentals for rate limiting
 
-## Things you learn
+**Time:** 4–5 h · **Level:** 1 → 10
 
-- Gateway architecture
-- Middleware composition
-- Policy enforcement
-- End-to-end system integration
+**Why it matters:** Multiple app instances need shared state. Redis is the default choice, and you must know its data types, expiry and execution model.
 
----
+**Prerequisites**
+- RL-12; CSF-15 (why Redis is single-threaded and fast)
 
-# 19. Section 18 — Rate-Limit Response Headers
+**What you'll learn**
+- Running Redis with Docker; `redis-cli`; the `ioredis` or `node-redis` client in TS
+- Data types: strings (`INCR`, `INCRBY`), hashes (`HSET`, `HGETALL`), sorted sets (`ZADD`, `ZREMRANGEBYSCORE`, `ZCARD`)
+- Expiry: `EXPIRE`, `PEXPIRE`, `SET ... PX ... NX`; lazy vs active expiration
+- Execution model: single-threaded command execution; pipelining vs `MULTI/EXEC` transactions vs Lua scripts (`EVAL`/`EVALSHA`) vs Redis Functions
+- Server time (`TIME`) vs app time
+- Persistence (RDB/AOF) and what's lost on restart; replication at a high level
+- Connection pooling and timeouts in Node
 
-## Goal
+**Hands-on (TypeScript)**
+1. Add `docker-compose.yml` with Redis; create a `RedisStore` for the fixed window using `INCR` + `PEXPIRE`.
+2. Run two instances of the playground behind NGINX and show the in-memory limiter failing (2× admissions) while the Redis limiter holds.
 
-Make the limiter understandable to clients.
+**Interview questions**
+- Why Redis for a distributed rate limiter?
+- `MULTI/EXEC` vs Lua scripts: what's the difference in atomicity?
+- What happens to the limits if Redis restarts?
 
----
+**Resources**
+- [Redis docs: Data types](https://redis.io/docs/latest/develop/data-types/) and [Programmability (Lua)](https://redis.io/docs/latest/develop/programmability/) (primary)
+- [ioredis docs](https://github.com/redis/ioredis)
 
-## Topics
+**Pitfalls**
+- Using `KEYS *` anywhere in production code.
 
-- HTTP headers
-- Retry semantics
-- Remaining quota
-- Reset time
+**Checklist: you should now be able to explain**
+- [ ] The Redis data types used by each algorithm
+- [ ] Expiry semantics
+- [ ] Pipelines vs transactions vs Lua
+- [ ] Persistence tradeoffs
 
 ---
-
-## Implement
-
-Return headers representing:
-
-```text
-limit
-remaining
-reset
-retry-after
-```
 
-On rejection:
+### RL-14 · Race conditions & atomicity
 
-```text
-429 Too Many Requests
-Retry-After: N
-```
+**Time:** 4–5 h · **Level:** 1 → 10
 
----
-
-## Architecture
+**Why it matters:** "Two requests read tokens=1 at the same time and both proceed" is *the* distributed rate limiter follow-up. You must show the race and the fix.
 
-Keep HTTP concerns outside the algorithm:
+**Prerequisites**
+- RL-13; CSF-09 (races)
 
-```text
-Limiter
-  ↓
-Decision object
-  ↓
-HTTP middleware
-  ↓
-Headers
-```
-
----
+**What you'll learn**
+- Check-then-act (GET → compare → SET) races across instances
+- The `INCR` then `EXPIRE` race (a key without a TTL lives forever if the process dies between them); fixes with `SET NX PX` + `INCR`, or Lua
+- `MULTI/EXEC` limits (can't branch on read values inside a transaction; `WATCH` + retry = optimistic locking)
+- Lua scripts as the atomic read-compute-write unit; script caching with `EVALSHA`
+- Why distributed locks are the wrong tool here (latency, failure modes)
+- Deterministic race reproduction: interleaving with controlled delays
 
-## Prerequisites
+**Hands-on (TypeScript)**
+1. Implement a naive Redis token bucket (GET/compute/SET) and a test firing 100 concurrent requests for 10 tokens: observe over-admission.
+2. Fix it with a Lua script; rerun the test and assert admitted ≤ 10.
+3. Implement the `WATCH`-based optimistic version and compare latency under contention.
 
-- HTTP
-- Limiter abstraction
+**Interview questions**
+- How do you make a Redis-based token bucket atomic?
+- Why not use a distributed lock around the check?
+- What does `WATCH` do?
 
----
+**Resources**
+- [Redis docs: Transactions](https://redis.io/docs/latest/develop/interact/transactions/) (primary)
+- [Redis docs: Scripting with Lua](https://redis.io/docs/latest/develop/programmability/eval-intro/)
 
-## You should know after this section
+**Pitfalls**
+- Believing pipelining makes commands atomic.
 
-You should be able to design a client-facing rate-limit contract.
+**Checklist: you should now be able to explain**
+- [ ] The check-then-act race with a timeline
+- [ ] The INCR/EXPIRE race
+- [ ] MULTI/EXEC vs WATCH vs Lua
+- [ ] Why locks aren't the right fix
 
 ---
-
-## Things you learn
 
-- API contracts
-- HTTP semantics
-- Retry behavior
-
----
+### RL-15 · Distributed algorithms in Redis
 
-# 20. Section 19 — Build a Load Tester
+**Time:** 6–8 h · **Level:** 1 → 10
 
-## Goal
+**Why it matters:** You'll be asked to sketch the Redis commands or Lua for your chosen algorithm. Having implemented them all makes this easy.
 
-Build your own testing tool instead of manually testing with curl/Postman.
+**Prerequisites**
+- RL-14
 
----
+**What you'll learn**
+- **Fixed window:** `INCR key:{window}` + `PEXPIRE` (atomic via Lua or `SET NX` first)
+- **Sliding window log:** sorted set per key: `ZREMRANGEBYSCORE` old → `ZCARD` → `ZADD` if allowed (in Lua); member uniqueness (timestamp + random suffix)
+- **Sliding window counter:** two keys (current, previous) read and incremented in Lua
+- **Token bucket:** hash `{tokens, ts}`; refill + consume in Lua; TTL = time to full refill
+- **GCRA:** a single key holding the TAT; `SET ... PX` in Lua
+- Time source: pass app time vs use Redis `TIME` (consistency across app servers with clock skew)
+- Returning `allowed`, `remaining` and `retryAfter` from scripts
+- Memory per key for each algorithm
 
-## Topics
+**Hands-on (TypeScript)**
+1. Implement all five as Redis stores behind the same `RateLimiter` interface; run your *existing* boundary test table against each (using a controllable time parameter).
+2. Concurrency test each with 200 parallel requests from two app instances.
+3. Measure memory per key (`MEMORY USAGE`) for each algorithm at a limit of 1,000/hour.
 
-- Concurrency
-- Throughput
-- Latency
-- Percentiles
-- Benchmarking
+**Interview questions**
+- Write the Lua script for a token bucket.
+- How do you implement a sliding window log in Redis? What's the memory cost?
+- Should the timestamp come from the app server or from Redis?
 
----
+**Resources**
+- [Redis docs: sorted sets](https://redis.io/docs/latest/develop/data-types/sorted-sets/) (primary)
+- Stripe's [rate limiter gist](https://gist.github.com/ptarjan/e38f45f2dfe601419ca3af937fff574d) (from the Stripe blog post)
 
-## CLI concept
+**Pitfalls**
+- Using the same score for two members in a ZSET (the second overwrites the first).
 
-```text
-rate-test \
-  --url http://localhost:3000/api/search \
-  --requests 10000 \
-  --concurrency 100
-```
+**Checklist: you should now be able to explain**
+- [ ] Redis implementations of all 5 algorithms
+- [ ] Time source choice
+- [ ] Memory comparison
+- [ ] How you tested each for concurrency
 
 ---
-
-## Output
-
-```text
-Total requests: 10,000
 
-2xx: 1,000
-429: 9,000
-5xx: 0
+### RL-16 · Client-side behavior
 
-P50: 8ms
-P95: 20ms
-P99: 35ms
+**Time:** 2–3 h · **Level:** 1 → 10
 
-Requests/sec: 8,400
-```
+**Why it matters:** A good limiter contract plus well-behaved clients prevents retry storms. Frontend and full-stack interviewers ask how the UI should react to 429s.
 
----
-
-## Experiments
+**Prerequisites**
+- RL-09; MC-08 (retry utilities)
 
-Test:
+**What you'll learn**
+- Honoring `Retry-After`; exponential backoff with full jitter; max retries; retry budgets
+- Which requests are safe to retry (idempotency)
+- Client-side throttling (e.g., Google's adaptive throttling: reject locally when the server has been rejecting)
+- UI patterns: disable repeated submits, queue and batch, show clear messages, avoid auto-retry loops
+- SDK design for API consumers (built-in backoff)
 
-```text
-10 concurrent
-50 concurrent
-100 concurrent
-500 concurrent
-1000 concurrent
-```
+**Hands-on (TypeScript)**
+1. Build a `fetchWithRateLimitHandling` client that honors `Retry-After`, applies jittered backoff and caps total retry time; test it against your playground.
+2. Build a tiny React form that handles 429 gracefully (disabled button with a countdown).
 
-Compare:
+**Interview questions**
+- How should a client react to a 429?
+- Why add jitter to retries?
+- What is client-side adaptive throttling?
 
-```text
-in-memory limiter
-Redis limiter
-```
-
----
+**Resources**
+- AWS: [Exponential Backoff and Jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/) (primary)
+- Google SRE Book: [Handling Overload](https://sre.google/sre-book/handling-overload/) (client-side throttling section)
 
-## Prerequisites
+**Pitfalls**
+- Immediate retries on 429.
 
-- Async programming
-- HTTP client
-- Basic statistics
+**Checklist: you should now be able to explain**
+- [ ] Backoff + jitter strategies
+- [ ] Retry safety and budgets
+- [ ] Adaptive client throttling
+- [ ] UI handling of limits
 
 ---
 
-## You should know after this section
+### RL-17 · Interview: "Design a rate limiter" (HLD + LLD)
 
-You should be able to answer:
+**Time:** 4–5 h · **Level:** 1 → 10
 
-- How fast is the limiter?
-- How much latency does Redis add?
-- What happens under high concurrency?
-- How does P99 latency change?
+**Why it matters:** This is the payoff. You'll run the full interview both as a distributed system design and as a class-level design.
 
----
+**Prerequisites**
+- RL-01 to RL-16
 
-## Things you learn
+**What you'll learn**
+- **HLD version (45 min):**
+  1. Requirements: client-side or server-side? Keys? Rules? Scale (e.g., 1M RPS, 100M users)? Latency budget (< 1–2 ms added)? Accuracy vs cost? Fail-open or fail-closed?
+  2. Where it lives: gateway middleware vs sidecar vs a central service
+  3. API: `shouldAllow(key, cost) → {allowed, remaining, retryAfter}`; rules API
+  4. High-level: gateway → limiter (local cache of rules) → Redis cluster; rules DB → config service → push to limiters
+  5. Deep dives: algorithm choice; atomicity (Lua); Redis sharding and hot keys; failure handling; multi-region; observability
+- **LLD version (45–60 min):** `RateLimiter` interface, `Algorithm` strategies, `RuleProvider`, `Store` abstraction (memory/Redis), `Clock`, `KeyResolver`, a factory for algorithms; thread safety; tests
+- Estimation: memory for keys, Redis ops/sec, network latency budget
 
-- Load generation
-- Benchmarking
-- Percentiles
-- Performance analysis
+**Hands-on (TypeScript)**
+1. Do a timed 45-minute HLD mock and a timed 60-minute LLD mock (with code); score yourself with the [HLD rubric](../Roadmap.md) and the [LLD rubric](../../LLD/Roadmap.md).
 
----
+**Interview questions**
+- Design a distributed rate limiter for an API gateway handling 1M RPS.
+- Design the classes for a rate limiting library that supports multiple algorithms.
+- How do you keep the limiter from adding latency?
 
-# 21. Section 20 — Failure Injection
+**Resources**
+- [Hello Interview: Design a distributed rate limiter](https://www.hellointerview.com/learn/system-design/problem-breakdowns/distributed-rate-limiter) (primary; after your attempt)
+- [Hello Interview: Rate limiter LLD](https://www.hellointerview.com/learn/low-level-design/problem-breakdowns/rate-limiter) (the class-design version)
+- *System Design Interview Vol. 1*, ch. 4
 
-## Goal
+**Pitfalls**
+- Spending 30 minutes on algorithms and never reaching the distributed deep dives.
 
-Break dependencies and decide how the system should behave.
+**Checklist: you should now be able to explain**
+- [ ] The full HLD walkthrough in 45 minutes
+- [ ] The LLD class design and code
+- [ ] Estimates for memory and QPS
+- [ ] Your top 3 deep dives and their tradeoffs
 
 ---
 
-## Topics
+## Level 10 → 50: Senior depth
 
-- Redis failure
-- Timeout
-- Partial failure
-- Fail-open
-- Fail-closed
-- Availability vs protection
-
----
+### RL-18 · Scaling the store: Redis Cluster & hot keys
 
-## Experiment 1 — Redis down
+**Time:** 4–5 h · **Level:** 10 → 50
 
-Stop Redis.
+**Why it matters:** "What if one Redis can't handle the load?" and "what if one API key sends 50% of the traffic?" are standard follow-ups.
 
-Observe the application.
+**Prerequisites**
+- RL-15; HLD-10 (partitioning)
 
----
+**What you'll learn**
+- Redis Cluster: 16,384 hash slots, sharding by key, `MOVED`/`ASK` redirects, cluster-aware clients
+- Multi-key Lua scripts need all keys in one slot: **hash tags** (`{user123}:second`, `{user123}:day`)
+- Capacity planning: ops/sec per shard, network round trips, pipelining
+- **Hot keys:** a single key's QPS exceeds one shard. Mitigations: local pre-aggregation, splitting a key into N sub-buckets (each with limit/N), local caches of "denied until" decisions
+- Replicas: reads from replicas are stale, so admission must go to the primary
+- Failover data loss (async replication) → temporary over-admission
 
-## Implement two strategies
+**Hands-on (TypeScript)**
+1. Run a 3-primary Redis Cluster in Docker; migrate your multi-limit Lua script to use hash tags; verify it works and fails without them (`CROSSSLOT`).
+2. Simulate a hot key and implement key splitting; measure the accuracy loss.
 
-### Fail open
+**Interview questions**
+- How do you shard rate-limit state?
+- How do multi-key Lua scripts work in Redis Cluster?
+- How do you handle a single hot API key?
+- What happens to limits during a Redis failover?
 
-```text
-Redis unavailable
-↓
-Allow request
-```
+**Resources**
+- [Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/) (primary; see "hash tags")
+- [Redis docs: Scale with Redis Cluster](https://redis.io/docs/latest/operate/oss_and_stack/management/scaling/)
 
-### Fail closed
+**Pitfalls**
+- Designing multi-limit scripts that silently span slots.
 
-```text
-Redis unavailable
-↓
-Reject request
-```
+**Checklist: you should now be able to explain**
+- [ ] Hash slots and hash tags
+- [ ] Hot-key mitigations and their accuracy costs
+- [ ] Failover consequences
 
 ---
-
-## Experiment 2 — Redis slow
 
-Introduce artificial latency.
+### RL-19 · Hybrid local + global limiting
 
-Measure:
+**Time:** 4–5 h · **Level:** 10 → 50
 
-```text
-API latency
-rate-limiter latency
-Redis latency
-```
+**Why it matters:** A Redis round trip on every request adds latency and load. Large systems combine local limiting with periodic global coordination and accept bounded inaccuracy.
 
----
+**Prerequisites**
+- RL-18
 
-## Experiment 3 — Redis restart
+**What you'll learn**
+- Local-only per instance (limit / N instances) and its problems with uneven load balancing and autoscaling
+- Local token buckets + async sync to a global store (batching increments)
+- Leasing/allocating quota chunks to instances (request 100 tokens at a time)
+- Local "deny cache" for keys already over the limit
+- Two-tier: Envoy local rate limit + global rate limit service
+- Quantifying over-admission (the accuracy SLA)
 
-Observe:
+**Hands-on (TypeScript)**
+1. Implement quota leasing: each instance fetches token batches from Redis and serves locally; run 3 instances and measure latency vs accuracy at batch sizes 1, 10 and 100.
 
-- Lost counters
-- Recovery
-- Behavior during restart
+**Interview questions**
+- How do you avoid a Redis call on every request?
+- What accuracy do you give up with local limiting, and how do you bound it?
 
----
+**Resources**
+- [Envoy docs: Local rate limit](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/local_rate_limit_filter) and [Global rate limiting](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/other_features/global_rate_limiting) (primary)
 
-## Prerequisites
+**Pitfalls**
+- Dividing the global limit equally across instances without considering skew.
 
-- Redis
-- Load testing
-- Distributed architecture
+**Checklist: you should now be able to explain**
+- [ ] Local vs global vs hybrid designs
+- [ ] Quota leasing mechanics
+- [ ] How you quantify and bound over-admission
 
 ---
 
-## You should know after this section
+### RL-20 · Failure modes
 
-You should be able to discuss:
+**Time:** 3–4 h · **Level:** 10 → 50
 
-- Whether to fail open or closed.
-- Why the correct answer may depend on the endpoint.
-- How the limiter itself can become a reliability risk.
+**Why it matters:** The limiter sits on the request path. If it fails badly, it takes the whole API down. Senior candidates discuss this unprompted.
 
----
-
-## Things you learn
+**Prerequisites**
+- RL-15; HLD-21
 
-- Fault tolerance
-- Dependency failure
-- Availability tradeoffs
-- Resilience
-
----
+**What you'll learn**
+- Store unavailable: **fail-open** (availability; risk of overload/abuse) vs **fail-closed** (safety; self-inflicted outage) vs **degrade to local limits**
+- Timeouts on limiter calls (tight, e.g., 5–20 ms); circuit breaker around the store
+- Lost replies: the script ran but the client timed out, so retries double-count. Mitigations: request IDs, idempotent charging for high-value quotas
+- Clock skew between app servers (use Redis `TIME` or a single time authority)
+- Redis restart/eviction → limits reset (acceptable for rate limits; not for billing quotas)
+- Config errors (a bad rule blocks everyone) → validation, shadow mode, staged rollout
+- The limiter as a single point of failure; blast radius
 
-# 22. Section 21 — Horizontal Scaling
+**Hands-on (TypeScript)**
+1. Add a store timeout + circuit breaker + fallback-to-local-limits; use Toxiproxy (Docker) to inject latency and disconnects; document behavior for each failure in a failure matrix.
 
-## Goal
+**Interview questions**
+- Redis is down. What does your rate limiter do?
+- How do you stop the limiter from adding latency when Redis is slow?
+- Could a bad rate-limit config take down your API? How do you prevent that?
 
-Run a real distributed application.
+**Resources**
+- [Toxiproxy](https://github.com/Shopify/toxiproxy) (primary for the lab)
+- [AWS Builders' Library: Timeouts, retries and backoff with jitter](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/)
 
----
+**Pitfalls**
+- Defaulting to fail-closed for all endpoints without thinking about it.
 
-## Architecture
-
-```text
-                  Load Balancer
-                  /     |     \
-                 ↓      ↓      ↓
-              Node 1  Node 2  Node 3
-                 \      |      /
-                  \     |     /
-                    Redis
-```
+**Checklist: you should now be able to explain**
+- [ ] Fail-open/closed/degrade per endpoint type
+- [ ] Timeouts and circuit breakers for the limiter
+- [ ] Lost-reply double counting
+- [ ] Config safety
 
 ---
-
-## How to implement
 
-Run:
+### RL-21 · Gateway & infrastructure integration
 
-```text
-3 Node containers
-1 Redis
-1 load balancer
-```
+**Time:** 3–4 h · **Level:** 10 → 50
 
-Send traffic through the load balancer.
+**Why it matters:** In practice you often configure an existing limiter (NGINX, Envoy, Kong, cloud gateways, CDN/WAF) rather than write one. Knowing the options shows production maturity.
 
----
+**Prerequisites**
+- RL-12, RL-19; CSF-17
 
-## Critical test
+**What you'll learn**
+- NGINX `limit_req` / `limit_conn` (leaky bucket, burst, nodelay)
+- Envoy local and global rate limiting; the envoyproxy/ratelimit service (Redis-backed, descriptor-based)
+- API gateways: Kong rate-limiting plugins, AWS API Gateway usage plans and throttling, Cloudflare/Akamai edge rules
+- Layering: edge (coarse, IP-based, DDoS) → gateway (per API key/tenant) → service (per operation/cost)
+- Build vs buy decision factors
 
-If your configured limit is:
+**Hands-on (TypeScript)**
+1. Put NGINX with `limit_req` in front of your playground; compare its behavior with your own middleware on the same load.
+2. (Optional) Run envoyproxy/ratelimit with Envoy in Docker against your API.
 
-```text
-100 requests
-```
+**Interview questions**
+- Would you build or buy a rate limiter?
+- How would you layer rate limits from the edge to the service?
 
-you must not accidentally allow:
+**Resources**
+- [envoyproxy/ratelimit](https://github.com/envoyproxy/ratelimit) (primary)
+- [Kong: Rate Limiting plugin docs](https://developer.konghq.com/plugins/rate-limiting/)
 
-```text
-100 × 3 = 300
-```
+**Pitfalls**
+- Duplicating identical limits at every layer.
 
-because there are three application instances.
+**Checklist: you should now be able to explain**
+- [ ] NGINX and Envoy limiting models
+- [ ] Gateway and CDN options
+- [ ] Layered limiting strategy
+- [ ] Build vs buy factors
 
 ---
-
-## Prerequisites
 
-- Docker
-- Redis
-- Load balancing basics
-- Distributed limiter
+### RL-22 · Observability & load testing
 
----
-
-## You should know after this section
+**Time:** 4–5 h · **Level:** 10 → 50
 
-You should be able to explain why shared state is required for globally enforced limits.
+**Why it matters:** You must prove the limiter works under load, and operators need to see who's being limited and why.
 
----
+**Prerequisites**
+- RL-15; HLD-22
 
-## Things you learn
+**What you'll learn**
+- Metrics: decisions by policy and outcome (allowed/denied), limiter latency (p50/p99), store errors, fallback activations, near-limit counts
+- Cardinality control: never label metrics by user/API key. Use logs or sampled events for per-key investigation, plus top-N denied keys via a sketch
+- Dashboards and alerts (sudden deny spikes might mean an attack *or* a bad config)
+- Load testing methodology: k6/autocannon; open vs closed workload models; warm-up; don't benchmark from the same machine
+- Verifying correctness under load: admitted ≤ limit per key per window (use the log as an oracle in tests)
 
-- Horizontal scaling
-- Load balancing
-- Shared distributed state
-- Distributed consistency
+**Hands-on (TypeScript)**
+1. Add Prometheus metrics (`prom-client`) and a Grafana dashboard to the playground.
+2. Write a k6 script with constant-arrival-rate load across 1,000 keys; verify per-key admitted counts from logs against the policy.
 
----
+**Interview questions**
+- What metrics would you track for a rate limiter?
+- How would you load test it and verify correctness?
+- How do you find which customers are being throttled the most?
 
-# 23. Section 22 — Observability
+**Resources**
+- [k6 docs: Scenarios and executors](https://grafana.com/docs/k6/latest/using-k6/scenarios/) (primary)
+- [Prometheus docs: Metric and label naming](https://prometheus.io/docs/practices/naming/)
 
-## Goal
+**Pitfalls**
+- `Promise.all` over 100k requests from one Node process: you end up benchmarking your client.
 
-Make the system operable.
+**Checklist: you should now be able to explain**
+- [ ] Limiter metrics and cardinality rules
+- [ ] Load test design (open vs closed models)
+- [ ] Correctness verification under load
 
 ---
 
-## Topics
+## Level 50 → 100: Expert
 
-- Metrics
-- Structured logs
-- Latency
-- Error rates
-- Rejection rates
-- Redis performance
+### RL-23 · Adaptive concurrency limits & load shedding
 
----
+**Time:** 4–5 h · **Level:** 50 → 100
 
-## Metrics
+**Why it matters:** Fixed rate limits protect against *clients*. Adaptive limits protect against *overload*, whatever the cause. This is where staff-level resilience discussions go.
 
-Track:
+**Prerequisites**
+- RL-20; HLD-21; CSF-03 (scheduling)
 
-```text
-requests_allowed_total
-requests_rejected_total
-429_total
-rate_limiter_latency
-redis_latency
-requests_by_endpoint
-requests_by_client
-```
+**What you'll learn**
+- Little's Law: concurrency = throughput × latency; why concurrency limits track capacity better than RPS limits
+- Adaptive concurrency: AIMD, TCP-Vegas-like and gradient algorithms (Netflix concurrency-limits)
+- Load shedding: reject early, cheaply; priority-based shedding (critical vs best-effort traffic); CoDel-style queue management (drop when queueing delay exceeds a target)
+- Server-side vs client-side throttling cooperation
+- Metastable failures and retry storms
 
----
+**Hands-on (TypeScript)**
+1. Implement an AIMD concurrency limiter middleware for `/api/expensive`; degrade the downstream (inject latency) and graph how the limit adapts.
+2. Add priority-based shedding using a request header.
 
-## Logs
+**Interview questions**
+- Why might a concurrency limit be better than a rate limit for protecting a service?
+- How does Netflix's adaptive concurrency limiting work?
+- How do you shed load fairly under overload?
 
-For rejected requests:
+**Resources**
+- [Netflix concurrency-limits (GitHub)](https://github.com/Netflix/concurrency-limits) and Netflix Tech Blog: "Performance Under Load" (primary)
+- Google SRE Book: [Handling Overload](https://sre.google/sre-book/handling-overload/), [Addressing Cascading Failures](https://sre.google/sre-book/addressing-cascading-failures/)
+- [AWS Builders' Library: Using load shedding to avoid overload](https://aws.amazon.com/builders-library/using-load-shedding-to-avoid-overload/)
 
-```text
-timestamp
-client
-endpoint
-policy
-algorithm
-remaining
-retryAfter
-```
+**Pitfalls**
+- Shedding only after doing the expensive work.
 
-Never log secrets such as API keys.
+**Checklist: you should now be able to explain**
+- [ ] Little's Law applied to limits
+- [ ] AIMD/gradient adaptive limits
+- [ ] Priority load shedding
+- [ ] CoDel-style queue control
 
 ---
-
-## Build
-
-Initially expose:
 
-```text
-GET /metrics
-```
-
-Later, optionally integrate:
-
-- Prometheus
-- Grafana
-
----
+### RL-24 · Fairness & scheduling
 
-## Prerequisites
+**Time:** 3–4 h · **Level:** 50 → 100
 
-- Load testing
-- HTTP
-- Logging
+**Why it matters:** Multi-tenant platforms (including LLM APIs) need fairness: one tenant must not starve others, even within their limits.
 
----
+**Prerequisites**
+- RL-23; HLD-23 (multi-tenancy)
 
-## You should know after this section
+**What you'll learn**
+- Noisy neighbor problems
+- Fair queuing: round robin, weighted fair queuing (WFQ), deficit round robin (DRR)
+- Hierarchical token buckets (org → team → user)
+- Shuffle sharding for isolation
+- Max-min fairness
 
-You should be able to answer:
+**Hands-on (TypeScript)**
+1. Implement a DRR scheduler in front of a worker pool with three tenants of different weights; show that a flooding tenant doesn't starve the others.
 
-- How many requests are being rejected?
-- Which endpoint causes most 429s?
-- Is Redis causing latency?
-- Is the limiter itself becoming a bottleneck?
+**Interview questions**
+- How do you prevent one tenant from hogging shared capacity?
+- Explain weighted fair queuing.
 
----
+**Resources**
+- [AWS Builders' Library: Fairness in multi-tenant systems](https://aws.amazon.com/builders-library/fairness-in-multi-tenant-systems/) (primary)
+- [AWS Builders' Library: Workload isolation using shuffle-sharding](https://aws.amazon.com/builders-library/workload-isolation-using-shuffle-sharding/)
 
-## Things you learn
+**Pitfalls**
+- Equating per-tenant rate limits with fairness under contention.
 
-- Production observability
-- Metrics
-- Structured logging
-- Debugging distributed systems
+**Checklist: you should now be able to explain**
+- [ ] WFQ and DRR
+- [ ] Hierarchical buckets
+- [ ] Shuffle sharding
+- [ ] Noisy-neighbor mitigation
 
 ---
-
-# 24. Section 23 — Performance and Capacity Experiments
-
-## Goal
 
-Determine the actual limits of your system.
+### RL-25 · Quotas, billing & AI/LLM limits
 
----
+**Time:** 4–5 h · **Level:** 50 → 100
 
-## Topics
+**Why it matters:** AI platforms limit by tokens per minute, requests per minute *and* concurrent requests, and often bill against quotas. Agentic and applied AI roles ask about this directly.
 
-- Throughput
-- Latency
-- CPU
-- Memory
-- Redis throughput
-- Hot keys
-- Bottlenecks
+**Prerequisites**
+- RL-12, RL-20; [AI System Design](../../AI%20System%20Design/Roadmap.md) AI-03 (tokens) and AI-14 (LLM gateway)
 
----
+**What you'll learn**
+- Rate limits vs billing quotas: quotas need durability (a DB or ledger), auditability and reconciliation; Redis alone isn't enough
+- LLM limits: RPM, input/output TPM, concurrent requests, daily spend caps
+- **Reserve → settle:** reserve estimated tokens before the call (input tokens + max output), settle actual usage afterwards, release the difference; handle timeouts (unknown outcome) and duplicate settlement (idempotency)
+- Per-tenant, per-user, per-agent-run budgets; stopping runaway agents
+- Provider-side limits (respecting upstream 429s and quotas) vs your own limits; multi-provider routing when limited
+- Soft vs hard limits, overage, notifications
 
-## Experiments
+**Hands-on (TypeScript)**
+1. Build a token-budget limiter for a fake LLM API: reserve/settle in Redis Lua with idempotent settlement by request ID; a per-run budget for an agent loop; a durable daily quota in Postgres with a reconciliation job.
 
-Measure:
+**Interview questions**
+- How would you rate limit an LLM API where cost depends on output length?
+- How do you stop a runaway agent from burning a customer's budget?
+- Rate limits vs quotas: how do their storage requirements differ?
 
-```text
-10k requests
-100k requests
-1M requests
-```
+**Resources**
+- [Anthropic API docs: Rate limits](https://platform.claude.com/docs/en/api/rate-limits) and [OpenAI docs: Rate limits](https://platform.openai.com/docs/guides/rate-limits) (primary; see how providers define RPM/TPM)
+- Stripe blog: [Designing robust and predictable APIs with idempotency](https://stripe.com/blog/idempotency)
 
-Try different:
+**Pitfalls**
+- Charging only after completion and letting concurrent requests blow past the budget.
 
-```text
-concurrency
-number of users
-number of endpoints
-rate-limit policies
-```
+**Checklist: you should now be able to explain**
+- [ ] Rate limit vs quota storage and guarantees
+- [ ] RPM/TPM/concurrency limits for LLMs
+- [ ] The reserve → settle protocol and its failure cases
+- [ ] Agent run budgets
 
 ---
 
-## Investigate
+### RL-26 · Multi-region limits & abuse prevention
 
-Ask:
+**Time:** 3–4 h · **Level:** 50 → 100
 
-```text
-What is the bottleneck?
-```
+**Why it matters:** Global APIs need limits that work across regions, and abuse prevention goes beyond counting requests.
 
-Possibilities:
+**Prerequisites**
+- RL-19; HLD-27
 
-```text
-Node CPU
-Redis
-Network
-Serialization
-Locking/atomicity
-Logging
-Load balancer
-```
-
----
+**What you'll learn**
+- Options: per-region limits (simple, but a user can get N× the limit), global store (cross-region latency), a home region per key, async replication of counts
+- CRDT counters (G-Counter/PN-Counter) for eventually consistent global counts
+- Accepting bounded over-admission and documenting it
+- Abuse: credential stuffing, scraping, spam; signals (velocity, device fingerprint, reputation); CAPTCHAs/proof-of-work; progressive penalties; allow/deny lists
+- DDoS layers: L3/L4 (network, anycast scrubbing) vs L7 (WAF, rate rules)
 
-## Prerequisites
+**Hands-on (TypeScript)**
+1. Simulate 3 regions with local limiters syncing G-Counters every 500 ms; measure over-admission vs the sync interval.
 
-All previous sections.
+**Interview questions**
+- How would you enforce a global limit of 1,000 requests/minute across 5 regions?
+- How would you detect and block credential-stuffing attacks?
 
----
+**Resources**
+- [crdt.tech](https://crdt.tech/) (G-Counter) (primary)
+- [Cloudflare Learning: What is a DDoS attack?](https://www.cloudflare.com/learning/ddos/what-is-a-ddos-attack/)
 
-## You should know after this section
+**Pitfalls**
+- Synchronous cross-region calls on every request.
 
-You should be able to reason from measurements rather than guesses.
+**Checklist: you should now be able to explain**
+- [ ] Multi-region limit strategies and their tradeoffs
+- [ ] CRDT counters
+- [ ] Abuse signals and responses
+- [ ] DDoS layers
 
 ---
-
-## Things you learn
 
-- Capacity planning
-- Bottleneck analysis
-- Performance engineering
-- Scaling decisions
-
----
+### RL-27 · Capstone: production-grade rate limiting service
 
-# 25. Section 24 — Final System Design Challenge
+**Time:** 10–15 h · **Level:** 50 → 100
 
-## Goal
+**Why it matters:** A complete, tested, measured system is the best proof of mastery and a strong story for interviews ("tell me about something you built").
 
-Design a rate limiter for:
+**Prerequisites**
+- Everything above (at least through RL-22)
 
-```text
-1 million requests/sec
-```
+**What you'll learn / build**
+- A standalone TS rate limiting service:
+  - HTTP (and optionally gRPC) API: `POST /check {key, policy, cost}` → decision
+  - Policies from validated config with hot reload and shadow mode
+  - Algorithms: token bucket, sliding window counter, GCRA (Redis Lua), plus local fallback
+  - Redis Cluster support with hash tags
+  - Timeouts, circuit breaker, fail-open/closed per policy
+  - Prometheus metrics, structured logs, a Grafana dashboard
+  - Test suite: unit (fake clock), integration (real Redis), concurrency, failure injection (Toxiproxy)
+  - A k6 load test report: throughput, p99 latency, correctness verification
+- A design doc (2–4 pages): requirements, design, alternatives, failure matrix, capacity estimates
 
-without looking at your previous implementation.
+**Hands-on (TypeScript)**
+1. Build it in `HLD/Rate Limiter/service/`. Write the design doc as `HLD/Rate Limiter/DESIGN.md`.
 
----
+**Interview questions**
+- Walk me through a system you built end to end, including how you tested and measured it.
 
-## Requirements
-
-Design support for:
-
-```text
-Per-IP limits
-Per-user limits
-Per-API-key limits
-Per-endpoint limits
-Global limits
-Tiered users
-Burst traffic
-Multiple application instances
-Redis failures
-```
+**Resources**
+- Everything from the sections above
 
----
+**Pitfalls**
+- Scope creep. Ship the core, then iterate.
 
-## Architecture you should be able to derive
-
-```text
-                         Internet
-                            │
-                            ▼
-                     Load Balancer
-                            │
-             ┌──────────────┼──────────────┐
-             ▼              ▼              ▼
-          Gateway 1      Gateway 2      Gateway 3
-             │              │              │
-             └──────────────┼──────────────┘
-                            │
-                            ▼
-                       Redis Cluster
-                            │
-                            ▼
-                    Rate-limit state
-```
+**Checklist: you should now be able to explain**
+- [ ] Every design decision in your service, and its alternative
+- [ ] Your measured performance and correctness results
+- [ ] Your failure matrix
 
 ---
-
-## Discuss
-
-### Algorithm
-
-Why Token Bucket?
-
-Why not Fixed Window?
-
-### Identity
-
-IP?
-
-User?
-
-API key?
-
-### Storage
-
-Why Redis?
 
-### Atomicity
+# Algorithm comparison
 
-Why Lua?
+| Algorithm | State per key | Accuracy | Burst behavior | Distributed (Redis) | Best for |
+| --- | --- | --- | --- | --- | --- |
+| Fixed window | 1 counter | Up to 2× limit at boundaries | Boundary bursts | `INCR` + expiry (simplest) | Simple, cheap limits |
+| Sliding window log | Up to `limit` timestamps | Exact | None beyond limit | Sorted set + Lua | Low limits needing exactness; test oracle |
+| Sliding window counter | 2 counters | Approximate (assumes even distribution) | Smoothed | 2 keys + Lua | High-volume APIs (Cloudflare) |
+| Token bucket | tokens + timestamp | Exact for its model | Up to capacity | Hash + Lua | Burst-friendly APIs (Stripe, AWS) |
+| Leaky bucket (queue) | Queue | Smooth output | Absorbed into the queue (adds latency) | Harder (queue + worker) | Smoothing traffic to fragile downstreams |
+| GCRA | 1 timestamp (TAT) | Exact for its model | Configurable tolerance | 1 key + Lua | Memory-efficient token-bucket semantics |
 
-### Scaling
-
-How do you reach 1M requests/sec?
-
-### Redis failure
-
-Fail open or closed?
-
-### Hot keys
-
-What if one client sends enormous traffic?
-
-### Memory
-
-How much state is stored?
-
-### Accuracy
-
-Does the limiter need exact enforcement?
-
-### Latency
-
-How much latency can rate limiting add?
-
 ---
 
-## Prerequisites
+# Correctness & failure test matrix
 
-All previous sections.
+| Scenario | Expected behavior | Section |
+| --- | --- | --- |
+| Requests at `t = 0`, just before, at and after the boundary | Matches the policy's exact interval semantics | RL-03/04 |
+| Two independent keys | No interference | RL-03 |
+| Weighted cost > remaining | Denied with correct `retryAfter` | RL-07 |
+| Cost > capacity | Rejected as impossible (config/validation error) | RL-07 |
+| Clock moves backwards | Clamped; no negative refill | RL-07 |
+| 100 concurrent requests, limit 10, 2 instances | Admitted ≤ 10 | RL-14/15 |
+| Key without TTL after a crash mid-operation | Impossible (atomic script sets TTL) | RL-14 |
+| Multi-limit: daily limit denies | Per-second allowance not consumed (all-or-nothing) | RL-12 |
+| Redis down | Configured fallback (open/closed/local) within the timeout budget | RL-20 |
+| Redis slow (200 ms) | Timeout + circuit breaker; bounded added latency | RL-20 |
+| Lost reply + client retry | Documented over-count behavior; idempotent for quotas | RL-20/25 |
+| Spoofed `X-Forwarded-For` | Doesn't bypass the limit | RL-11 |
+| Hot key at 50% of traffic | Mitigation keeps shard load bounded | RL-18 |
+| `/health` under flood | Never rate limited | RL-09 |
 
 ---
 
-## You should know after this section
+# Readiness checklist
 
-You should be able to design the system from requirements rather than remembering an architecture diagram.
+**Level 1**
+- [ ] All algorithms implemented with the fake-clock test table
+- [ ] `rateLimiter.ts` passes options to every algorithm; per-route limits; correct headers
 
----
-
-# 26. Recommended Project Structure at the End
-
-Your final repository can look like:
-
-```text
-rate-limiter-lab/
-
-├── src/
-│   ├── server/
-│   │   ├── server.js
-│   │   ├── routes.js
-│   │   └── middleware.js
-│   │
-│   ├── rate-limit/
-│   │   ├── interface.js
-│   │   ├── fixed-window.js
-│   │   ├── sliding-window.js
-│   │   ├── sliding-counter.js
-│   │   ├── token-bucket.js
-│   │   ├── leaky-bucket.js
-│   │   │
-│   │   ├── stores/
-│   │   │   ├── memory-store.js
-│   │   │   └── redis-store.js
-│   │   │
-│   │   └── policies/
-│   │       └── policies.js
-│   │
-│   ├── redis/
-│   │   └── scripts/
-│   │       └── token-bucket.lua
-│   │
-│   └── observability/
-│       ├── metrics.js
-│       └── logger.js
-│
-├── load-test/
-│   └── client.js
-│
-├── test/
-│   ├── unit/
-│   ├── integration/
-│   ├── concurrency/
-│   └── failure/
-│
-├── docker/
-│   └── docker-compose.yml
-│
-├── docs/
-│   ├── algorithms.md
-│   ├── architecture.md
-│   ├── experiments.md
-│   └── tradeoffs.md
-│
-├── package.json
-└── README.md
-```
+**Level 10: Interview-ready**
+- [ ] Atomic Redis implementations with passing concurrency tests
+- [ ] 45-minute HLD mock and 60-minute LLD mock scored ≥ 3
+- [ ] Can explain key choice, multi-limit semantics and client behavior
 
----
+**Level 50: Senior**
+- [ ] Cluster/hash-tag design, hot-key mitigation and hybrid local/global limiting
+- [ ] Failure matrix validated with fault injection
+- [ ] Load test with correctness verification
 
-# 27. The Learning Loop for Every Section
-
-Use the same process for every phase.
-
-```text
-                 ┌───────────────┐
-                 │ Learn concept │
-                 └───────┬───────┘
-                         ↓
-                 ┌───────────────┐
-                 │ Implement     │
-                 └───────┬───────┘
-                         ↓
-                 ┌───────────────┐
-                 │ Write tests   │
-                 └───────┬───────┘
-                         ↓
-                 ┌───────────────┐
-                 │ Break it      │
-                 └───────┬───────┘
-                         ↓
-                 ┌───────────────┐
-                 │ Measure       │
-                 └───────┬───────┘
-                         ↓
-                 ┌───────────────┐
-                 │ Find tradeoff │
-                 └───────┬───────┘
-                         ↓
-                 ┌───────────────┐
-                 │ Improve       │
-                 └───────┬───────┘
-                         ↓
-                 ┌───────────────┐
-                 │ Explain it    │
-                 └───────────────┘
-```
-
-For each section, maintain four files/notes:
-
-```text
-implementation
-tests
-experiments
-learnings
-```
-
-Your `learnings` note should answer:
-
-```text
-What problem did this solve?
-
-How does it work?
-
-What assumptions does it make?
-
-What breaks it?
-
-What are its tradeoffs?
-
-How would I scale it?
-
-Why would I choose/not choose it?
-```
+**Level 100: Expert**
+- [ ] Adaptive concurrency limits, fairness and LLM token budgets implemented
+- [ ] Capstone service and design doc complete
 
 ---
 
-# 28. Mastery Checklist
-
-## Fundamentals
-
-- [ ] Explain rate limiting.
-- [ ] Explain 429.
-- [ ] Explain Retry-After.
-- [ ] Identify rate-limit keys.
-- [ ] Distinguish rate limiting from throttling.
-
-## Algorithms
-
-- [ ] Implement Fixed Window.
-- [ ] Break Fixed Window.
-- [ ] Implement Sliding Window Log.
-- [ ] Optimize its data structure.
-- [ ] Implement Sliding Window Counter.
-- [ ] Implement Token Bucket.
-- [ ] Implement Leaky Bucket.
-- [ ] Compare all algorithms.
-
-## Architecture
-
-- [ ] Build a common limiter interface.
-- [ ] Build a policy engine.
-- [ ] Support IP limits.
-- [ ] Support user limits.
-- [ ] Support API-key limits.
-- [ ] Support endpoint limits.
-- [ ] Support global limits.
-- [ ] Support multiple simultaneous limits.
-
-## Distributed systems
-
-- [ ] Move state to Redis.
-- [ ] Run multiple Node instances.
-- [ ] Reproduce race conditions.
-- [ ] Fix atomicity issues.
-- [ ] Use Redis transactions where appropriate.
-- [ ] Implement a Lua-based limiter.
-- [ ] Implement distributed Token Bucket.
-
-## Reliability
-
-- [ ] Kill Redis.
-- [ ] Simulate Redis latency.
-- [ ] Implement fail-open behavior.
-- [ ] Implement fail-closed behavior.
-- [ ] Understand when each is appropriate.
-- [ ] Test recovery.
-
-## Performance
-
-- [ ] Build load tester.
-- [ ] Measure throughput.
-- [ ] Measure P50.
-- [ ] Measure P95.
-- [ ] Measure P99.
-- [ ] Find bottlenecks.
-- [ ] Test horizontal scaling.
-
-## Production
-
-- [ ] Add metrics.
-- [ ] Add structured logs.
-- [ ] Add rate-limit headers.
-- [ ] Add dashboards/monitoring.
-- [ ] Document failure modes.
-- [ ] Document algorithm tradeoffs.
-
-## System design
-
-- [ ] Design a 100K req/sec limiter.
-- [ ] Design a 1M req/sec limiter.
-- [ ] Explain Redis architecture.
-- [ ] Explain hot keys.
-- [ ] Explain consistency.
-- [ ] Explain failure handling.
-- [ ] Explain capacity planning.
-
----
+# Core resources
 
-# 29. Final Definition of Done
-
-You are done when you can start with this requirement:
-
-> "Build a distributed rate limiter for an API serving 1 million requests/sec. Different customers have different limits, some endpoints are more expensive, traffic can burst, and Redis can fail."
-
-And independently work through:
-
-```text
-Requirements
-    ↓
-Rate-limit key
-    ↓
-Algorithm
-    ↓
-Policy model
-    ↓
-Data structure
-    ↓
-Redis state
-    ↓
-Atomic operation
-    ↓
-Horizontal scaling
-    ↓
-Failure handling
-    ↓
-Observability
-    ↓
-Capacity testing
-```
-
-Most importantly, you should be able to explain **why** you made each decision and what tradeoff it introduces.
-
-That is the difference between knowing "what a token bucket is" and actually understanding rate limiting as a distributed-systems problem.
+| Resource | Use it for |
+| --- | --- |
+| [Stripe: Scaling your API with rate limiters](https://stripe.com/blog/rate-limiters) | Production perspective and limiter types |
+| [Cloudflare: Counting things, a lot of different things](https://blog.cloudflare.com/counting-things-a-lot-of-different-things/) | Sliding window counter at scale |
+| [Brandur: Rate limiting, cells, and GCRA](https://brandur.org/rate-limiting) | GCRA |
+| [Figma: An alternative approach to rate limiting](https://www.figma.com/blog/an-alternative-approach-to-rate-limiting/) | Algorithm tradeoffs in practice |
+| [Redis docs](https://redis.io/docs/latest/) | Data types, Lua, Cluster |
+| [envoyproxy/ratelimit](https://github.com/envoyproxy/ratelimit) | A production global limiter design |
+| [Google SRE Book: Handling Overload](https://sre.google/sre-book/handling-overload/) | Overload and client throttling |
+| [Netflix concurrency-limits](https://github.com/Netflix/concurrency-limits) | Adaptive concurrency |
+| [IETF RateLimit headers draft](https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/) | Client contract |
+| *System Design Interview Vol. 1*, ch. 4 (Alex Xu) | Interview walkthrough |
